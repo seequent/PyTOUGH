@@ -772,8 +772,7 @@ class t2grid(object):
             def elev(blk, max_volume = None):
                 if blk.centre is None: return np.nan
                 elif max_volume is None: return blk.centre[2]
-                elif blk.volume == 1.e25: return np.nan  # filter out atmos volumes
-                elif 0. < blk.volume <= max_volume: return blk.centre[2]
+                elif 0. < blk.volume < max_volume: return blk.centre[2]
                 else: return np.nan
             return np.array([elev(blk, max_volume) for blk in grid.blocklist])
 
