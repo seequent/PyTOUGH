@@ -794,6 +794,21 @@ class t2grid(object):
             iorigin = np.nanargmin(blockelevs(grid))
             return grid.blocklist[iorigin]
 
+        def find_all_blocks_in_layer(grid, elev):
+            return [blk for blk in grid.blocklist if blk.centre is not None and np.isclose(blk.centre[2], elev)]
+
+        def is_structured_grid(grid, ob):
+            ob_layer_blocks = find_all_blocks_in_layer(grid, ob.centre[2])
+            layer_block_dict = dict()
+            for block in ob_layer_blocks:
+                layer_block_dict[block.name] = block
+            for block in ob_layer_blocks:
+                neighbours = [layer_block_dict[neighbour_name] for neighbour_name in block.get_neighbour_names()
+                              if layer_block_dict.get(neighbour_name, None) is not None]
+                if len(neighbours) > 4:
+                    return False
+            return True
+
         def con_name_index(con, blkname):
             """Index of block name in connection block names."""
             if con[0] == blkname: return 0
@@ -969,6 +984,8 @@ class t2grid(object):
             else: ob = find_origin_block(self)
             if ob is None: raise Exception("Can't find origin block for grid.")
             else:
+                if not is_structured_grid(self, ob):
+                    raise Exception("Invalid number of neighbouring blocks.")
                 spacings = block_spacings(self, ob, atmos_volume)
                 nblks = dict([(i, len(spacings[i])) for i in range(1,4)])
                 geo = mulgrid().rectangular(spacings[1], spacings[2], spacings[3],
