@@ -797,12 +797,11 @@ class t2grid(object):
         def find_all_blocks_in_layer(grid, elev):
             return [blk for blk in grid.blocklist if blk.centre is not None and np.isclose(blk.centre[2], elev)]
 
-        def is_structured_grid(grid, ob):
-            ob_layer_blocks = find_all_blocks_in_layer(grid, ob.centre[2])
+        def is_structured_grid(layer_blocks):
             layer_block_dict = dict()
-            for block in ob_layer_blocks:
+            for block in layer_blocks:
                 layer_block_dict[block.name] = block
-            for block in ob_layer_blocks:
+            for block in layer_blocks:
                 neighbours = [layer_block_dict[neighbour_name] for neighbour_name in block.get_neighbour_names()
                               if layer_block_dict.get(neighbour_name, None) is not None]
                 if len(neighbours) > 4:
@@ -817,6 +816,8 @@ class t2grid(object):
 
         def next_block_in_direction(blk, last, direction, grid, max_volume = None):
             """Finds next block in specified direction, and connection connecting them."""
+            if not blk:
+                return None, None
             cons = [con for con in blk.connection_name if
                     grid.connection[con].direction == direction]
             if last: cons = [con for con in cons if last.name not in con]
@@ -899,7 +900,9 @@ class t2grid(object):
             bottom_layer = geo.layerlist[-1]
             for col in geo.columnlist:
                 geoblkname = geo.block_name(bottom_layer.name, col.name)
-                blkname = blockmap[geoblkname]
+                blkname = blockmap.get(geoblkname, None)
+                if not blkname:
+                    raise Exception("Block not mapped")
                 bottom_block = grid.block[blkname]
                 colblocks, layerthicks = block_direction_track(grid, bottom_block, 3, max_volume)
                 if colblocks:
@@ -926,7 +929,11 @@ class t2grid(object):
         def match_position(geo, grid, ob):
             """Rotate and translate geometry as needed."""
             blks, sp = block_direction_track(grid, ob, 1)
-            angle =  0.5 * np.pi - vector_heading(blks[-1].centre[0:2] - ob.centre[:2])
+            v = blks[-1].centre[0:2] - ob.centre[:2]
+            if any(v):
+                angle = 0.5 * np.pi - vector_heading(v)
+            else:
+                angle = 0
             from math import degrees
             angle = degrees(angle)
             geo.rotate(-angle, np.zeros(2))
@@ -950,6 +957,8 @@ class t2grid(object):
                     blk, last3 = start1, None
                     for lay in geo.layerlist[::-1]:
                         geoblkname = geo.block_name(lay.name, col.name)
+                        if not blk:
+                            raise Exception("Block not mapped")
                         mapping[geoblkname] = blk.name
                         next_blk,con = next_block_in_direction(blk, last3, 3, grid, max_volume)
                         if next_blk is None: # incomplete column
@@ -984,7 +993,8 @@ class t2grid(object):
             else: ob = find_origin_block(self)
             if ob is None: raise Exception("Can't find origin block for grid.")
             else:
-                if not is_structured_grid(self, ob):
+                base_layer_blocks = find_all_blocks_in_layer(self, ob.centre[2])
+                if not is_structured_grid(base_layer_blocks):
                     raise Exception("Invalid number of neighbouring blocks.")
                 spacings = block_spacings(self, ob, atmos_volume)
                 nblks = dict([(i, len(spacings[i])) for i in range(1,4)])
@@ -992,7 +1002,12 @@ class t2grid(object):
                                             convention = convention, atmos_type = atmos_type,
                                             justify = justify, chars = chars, spaces = spaces,
                                             block_order = block_order)
-                blockmap = block_mapping(geo, self, ob, nblks, atmos_volume)
+                try:
+                    blockmap = block_mapping(geo, self, ob, nblks, atmos_volume)
+                except Exception:
+                    raise Exception("Unable to create geometry.")
+                if not all([getattr(b, 'name', None) in blockmap.values() for b in base_layer_blocks]):
+                    raise Exception("Unable to create geometry.")
                 geo = match_position(geo, self, ob)
                 geo = find_surface(geo, self, blockmap, remove_inactive, atmos_volume)
                 geo.snap_columns_to_layers(layer_snap)
