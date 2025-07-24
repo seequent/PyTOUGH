@@ -19,20 +19,24 @@ from math import ceil
 import struct
 from os.path import splitext
 
-def primary_to_region_we(primary):
-    """Returns thermodynamic region deduced from primary variables for EOS we."""
+def convert_primary_eos_1(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 1."""
     from t2thermo import region
-    if primary[1] < 1.: return 4
-    else: return region(primary[1], primary[0])
+    if primary[1] < 1.5: return primary, 4
+    else: return primary, region(primary[1], primary[0])
 
-def primary_to_region_wge(primary):
-    """Returns thermodynamic region deduced from primary variables for wge
-    (NCG) EOS (wce, wae)."""
+def convert_primary_eos_2_or_4(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 2 or 4.
+    """
     pwater = primary[0] - primary[2]
-    return primary_to_region_we([pwater, primary[1]])
+    v, region = convert_primary_eos_1([pwater, primary[1]])
+    return primary, region
 
-primary_to_region_funcs = {'w': primary_to_region_we, 'we': primary_to_region_we,
-                           'wce': primary_to_region_wge, 'wae': primary_to_region_wge}
+convert_primary_funcs = {'W': convert_primary_eos_1, 'EW': convert_primary_eos_1,
+                         'EWC': convert_primary_eos_2_or_4,
+                         'EWAV': convert_primary_eos_2_or_4}
 waiwera_eos_num_primary = {'w': 1, 'we': 2, 'wce': 3, 'wae': 3}
 
 def trim_trailing_nones(vals):
@@ -2105,12 +2109,22 @@ class t2data(object):
         return jsondata
 
     def eos_json(self, eos):
-        """Converts TOUGH2 EOS data to Waiwera JSON dictionary. Also returns
-        a second dictionary with tracer data."""
+        """Converts TOUGH2 EOS data to Waiwera JSON dictionary. Also returns a
+        second dictionary with tracer data and the appropriate primary
+        variable conversion function for the EOS.
+        """
         jsondata = {}
         supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWAV': 'wae',
                          'EWT': 'we', 'EWTD': 'we'}
+        primary_converters = {'W': convert_primary_eos_1,
+                              'EW': convert_primary_eos_1,
+                              'EWC': convert_primary_eos_2_or_4,
+                              'EWAV': convert_primary_eos_2_or_4,
+                              'EWT': convert_primary_eos_1,
+                              'EWTD': convert_primary_eos_1
+                              }
         aut2eosname = ''
+        primary_converter = None
         if eos is None:
             if self.multi:
                 if 'eos' in self.multi:
@@ -2129,6 +2143,7 @@ class t2data(object):
                 jsondata['eos'] = {'name': supported_eos[aut2eosname]}
                 if jsondata['eos']['name'] == 'w':
                     jsondata['eos']['temperature'] = self.parameter['default_incons'][1]
+                primary_converter = primary_converters[aut2eosname]
             else:
                 raise Exception ('EOS not supported:' + aut2eosname)
         else:
@@ -2144,7 +2159,7 @@ class t2data(object):
                     raise Exception ('Unhandled diffusion type: %s' % str(self.diffusion))
         else:
             tracerdata = None
-        return jsondata, tracerdata
+        return jsondata, tracerdata, primary_converter
 
     def timestepping_json(self):
         """Converts TOUGH2 timestepping/ iteration parameters to Waiwera JSON
@@ -2286,48 +2301,41 @@ class t2data(object):
         else: jsondata['capillary_pressure'] = None
         return jsondata
 
-    def initial_json(self, geo, incons, eos, tracer = None):
+    def initial_json(self, geo, incons, eos, primary_converter, tracer = None):
         """Converts initial condition specifications to Waiwera JSON dictionary."""
         jsondata = {}
+        num_primary = waiwera_eos_num_primary[eos]
+        num_t2_primary = num_primary + 1 if eos == 'w' else num_primary
 
         if isinstance(incons, str):
             jsondata['initial'] = {'filename': incons}
         elif isinstance(incons, list):
-            num_primary = waiwera_eos_num_primary[eos]
-            if len(incons) >= num_primary:
-                jsondata['initial'] = {'primary': incons[:num_primary]}
-            if tracer and len(incons) >= num_primary + 1:
-                jsondata['initial']['tracer'] = incons[num_primary]
-            if incons:
-                if eos in primary_to_region_funcs:
-                    primary_to_region = primary_to_region_funcs[eos]
-                    jsondata['initial']['region'] = primary_to_region(incons)
-                else:
-                    raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+            if len(incons) >= num_t2_primary:
+                primary, region = primary_converter(incons[:num_t2_primary])
+                jsondata['initial'] = {'primary': primary[:num_primary],
+                                       'region': region}
+            if tracer and len(incons) >= num_t2_primary + 1:
+                jsondata['initial']['tracer'] = incons[num_t2_primary]
         elif isinstance(incons, t2incon):
-            num_primary = waiwera_eos_num_primary[eos]
-            if eos in primary_to_region_funcs:
-                jsondata['initial'] = {'primary': [], 'region': []}
-                if tracer: jsondata['initial']['tracer'] = []
-                primary_to_region = primary_to_region_funcs[eos]
-                for blkname in geo.block_name_list[geo.num_atmosphere_blocks:]:
-                    primary = incons[blkname].variable
-                    jsondata['initial']['primary'].append(primary[:num_primary])
-                    jsondata['initial']['region'].append(primary_to_region(primary))
-                    if tracer: jsondata['initial']['tracer'].append(primary[num_primary])
-                if np.isclose(jsondata['initial']['primary'],
-                              jsondata['initial']['primary'][0], rtol = 1.e-8).all():
-                    jsondata['initial']['primary'] = jsondata['initial']['primary'][0]
-                if len(set(jsondata['initial']['region'])) == 1:
-                    jsondata['initial']['region'] = jsondata['initial']['region'][0]
-                if tracer:
-                    if np.isclose(jsondata['initial']['tracer'],
-                                  jsondata['initial']['tracer'][0], rtol = 1.e-8).all():
-                        jsondata['initial']['tracer'] = jsondata['initial']['tracer'][0]
-                    else:
-                        raise Exception("Inhomogeneous tracer initial conditions not yet supported.")
-            else:
-                raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+            jsondata['initial'] = {'primary': [], 'region': []}
+            if tracer: jsondata['initial']['tracer'] = []
+            for blkname in geo.block_name_list[geo.num_atmosphere_blocks:]:
+                var = incons[blkname].variable
+                primary, region = primary_converter(var[:num_t2_primary])
+                jsondata['initial']['primary'].append(primary[:num_primary])
+                jsondata['initial']['region'].append(region)
+                if tracer: jsondata['initial']['tracer'].append(var[num_t2_primary])
+            if np.isclose(jsondata['initial']['primary'],
+                          jsondata['initial']['primary'][0], rtol = 1.e-8).all():
+                jsondata['initial']['primary'] = jsondata['initial']['primary'][0]
+            if len(set(jsondata['initial']['region'])) == 1:
+                jsondata['initial']['region'] = jsondata['initial']['region'][0]
+            if tracer:
+                if np.isclose(jsondata['initial']['tracer'],
+                              jsondata['initial']['tracer'][0], rtol = 1.e-8).all():
+                    jsondata['initial']['tracer'] = jsondata['initial']['tracer'][0]
+                else:
+                    raise Exception("Inhomogeneous tracer initial conditions not yet supported.")
         return jsondata
 
     def generators_json(self, geo, eosname, tracer = None):
@@ -2645,102 +2653,100 @@ class t2data(object):
             jsondata['network'] = network
         return jsondata
 
-    def boundaries_json(self, geo, bdy_incons, atmos_volume, eos, mesh_coords, tracer = None):
+    def boundaries_json(self, geo, bdy_incons, atmos_volume, eos, primary_converter,
+                        mesh_coords, tracer = None):
         """Converts Dirichlet boundary conditions to Waiwera JSON dictionary.
         Currently connections to boundary blocks that are not either horizontal or
         vertical will not be converted correctly.
         """
         jsondata = {}
         vertical_tolerance = 1.e-6
-        if eos in primary_to_region_funcs:
-            primary_to_region = primary_to_region_funcs[eos]
-            num_primary = waiwera_eos_num_primary[eos]
-            jsondata['boundaries'] = []
-            for blk in self.grid.blocklist:
-                if not (0. < blk.volume < atmos_volume):
-                    if isinstance(bdy_incons, t2incon):
-                        pv = bdy_incons[blk.name].variable
-                    else:
-                        pv = bdy_incons
-                    reg = primary_to_region(pv)
-                    bc = {'primary': pv[:num_primary], 'region': reg, 'faces': []}
-                    if tracer: bc['tracer'] = pv[num_primary]
-                    for conname in blk.connection_name:
-                        nz = -self.grid.connection[conname].dircos
-                        vertical_connection = abs(nz) > vertical_tolerance
-                        names = list(conname)
-                        names.remove(blk.name)
-                        interior_blkname = names[0]
-                        interior_blk = self.grid.block[interior_blkname]
-                        if 0. < interior_blk.volume < atmos_volume:
-                            cell_index = geo.block_name_index[interior_blkname] - geo.num_atmosphere_blocks
-                            if blk.centre is None:
-                                if vertical_connection:
-                                    normal = np.array([0., 0., nz])
-                                else:
-                                    raise Exception("Can't find normal vector for connection: " +
-                                                    str(conname))
+        num_primary = waiwera_eos_num_primary[eos]
+        num_t2_primary = num_primary + 1 if eos == 'w' else num_primary
+        jsondata['boundaries'] = []
+        for blk in self.grid.blocklist:
+            if not (0. < blk.volume < atmos_volume):
+                if isinstance(bdy_incons, t2incon):
+                    pv = bdy_incons[blk.name].variable
+                else:
+                    pv = bdy_incons
+                primary, reg = primary_converter(pv[:num_t2_primary])
+                bc = {'primary': primary[:num_primary], 'region': reg, 'faces': []}
+                if tracer: bc['tracer'] = pv[num_t2_primary]
+                for conname in blk.connection_name:
+                    nz = -self.grid.connection[conname].dircos
+                    vertical_connection = abs(nz) > vertical_tolerance
+                    names = list(conname)
+                    names.remove(blk.name)
+                    interior_blkname = names[0]
+                    interior_blk = self.grid.block[interior_blkname]
+                    if 0. < interior_blk.volume < atmos_volume:
+                        cell_index = geo.block_name_index[interior_blkname] - geo.num_atmosphere_blocks
+                        if blk.centre is None:
+                            if vertical_connection:
+                                normal = np.array([0., 0., nz])
                             else:
-                                normal = blk.centre - interior_blk.centre
-                            normal /= np.linalg.norm(normal)
-                            if mesh_coords != 'xyz':
-                                if vertical_connection:
-                                    if mesh_coords in ['xz', 'yz', 'rz']:
-                                        normal = normal[[0,2]]
-                                    elif mesh_coords == 'xy': normal = None
-                                else: normal = normal[[0,1]]
-                            if normal is not None:
-                                bc['faces'].append({"cells": [cell_index],
-                                                    "normal": list(normal)})
-                    normals = np.array([spec['normal'] for spec in bc['faces']])
-                    if np.isclose(normals, normals[0], rtol = 1.e-8).all():
-                        allcells = []
-                        for spec in bc['faces']:
-                            allcells += spec['cells']
-                        bc['faces'] = {"cells": allcells,
-                                       "normal": bc['faces'][0]["normal"]}
-                    if bc['faces']:
-                        if isinstance(bc['faces'], list) and \
-                           len(bc['faces']) == 1: bc['faces'] = bc['faces'][0]
-                        jsondata['boundaries'].append(bc)
+                                raise Exception("Can't find normal vector for connection: " +
+                                                str(conname))
+                        else:
+                            normal = blk.centre - interior_blk.centre
+                        normal /= np.linalg.norm(normal)
+                        if mesh_coords != 'xyz':
+                            if vertical_connection:
+                                if mesh_coords in ['xz', 'yz', 'rz']:
+                                    normal = normal[[0,2]]
+                                elif mesh_coords == 'xy': normal = None
+                            else: normal = normal[[0,1]]
+                        if normal is not None:
+                            bc['faces'].append({"cells": [cell_index],
+                                                "normal": list(normal)})
+                normals = np.array([spec['normal'] for spec in bc['faces']])
+                if np.isclose(normals, normals[0], rtol = 1.e-8).all():
+                    allcells = []
+                    for spec in bc['faces']:
+                        allcells += spec['cells']
+                    bc['faces'] = {"cells": allcells,
+                                   "normal": bc['faces'][0]["normal"]}
+                if bc['faces']:
+                    if isinstance(bc['faces'], list) and \
+                       len(bc['faces']) == 1: bc['faces'] = bc['faces'][0]
+                    jsondata['boundaries'].append(bc)
 
-            if jsondata['boundaries']:
-                # collapse down to one boundary if possible:
-                primaries = np.array([bc['primary'] for bc in jsondata['boundaries']])
-                if np.isclose(primaries, primaries[0], rtol = 1.e-8).all():
-                    regions = np.array([bc['region'] for bc in jsondata['boundaries']])
-                    if np.isclose(regions, regions[0]).all():
-                        if tracer:
-                            tracers = np.array([bc['tracer'] for bc in jsondata['boundaries']])
-                            homog_tracer = np.isclose(tracers, tracers[0], rtol = 1.e-8).all()
-                        else: homog_tracer = True
-                        if homog_tracer:
-                            normals = []
+        if jsondata['boundaries']:
+            # collapse down to one boundary if possible:
+            primaries = np.array([bc['primary'] for bc in jsondata['boundaries']])
+            if np.isclose(primaries, primaries[0], rtol = 1.e-8).all():
+                regions = np.array([bc['region'] for bc in jsondata['boundaries']])
+                if np.isclose(regions, regions[0]).all():
+                    if tracer:
+                        tracers = np.array([bc['tracer'] for bc in jsondata['boundaries']])
+                        homog_tracer = np.isclose(tracers, tracers[0], rtol = 1.e-8).all()
+                    else: homog_tracer = True
+                    if homog_tracer:
+                        normals = []
+                        for bc in jsondata['boundaries']:
+                            if isinstance(bc['faces'], dict):
+                                normals.append(bc['faces']['normal'])
+                            else:
+                                for face in bc['faces']:
+                                    normals.append(face['normal'])
+                        normals = np.array(normals)
+                        if np.isclose(normals, normals[0], rtol = 1.e-8).all():
+                            allcells = []
                             for bc in jsondata['boundaries']:
                                 if isinstance(bc['faces'], dict):
-                                    normals.append(bc['faces']['normal'])
+                                    allcells += bc['faces']['cells']
                                 else:
                                     for face in bc['faces']:
-                                        normals.append(face['normal'])
-                            normals = np.array(normals)
-                            if np.isclose(normals, normals[0], rtol = 1.e-8).all():
-                                allcells = []
-                                for bc in jsondata['boundaries']:
-                                    if isinstance(bc['faces'], dict):
-                                        allcells += bc['faces']['cells']
-                                    else:
-                                        for face in bc['faces']:
-                                            allcells += face['cells']
-                                normal = list(normals[0, :])
-                                primary = list(primaries[0,:])
-                                region = int(regions[0])
-                                jsondata['boundaries'] = [{"primary": primary, "region": region,
-                                                           "faces": {"normal": normal,
-                                                                     "cells": allcells}}]
-                                if tracer:
-                                    jsondata['boundaries'][0]['tracer'] = tracers[0]
-        else:
-            raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+                                        allcells += face['cells']
+                            normal = list(normals[0, :])
+                            primary = list(primaries[0,:])
+                            region = int(regions[0])
+                            jsondata['boundaries'] = [{"primary": primary, "region": region,
+                                                       "faces": {"normal": normal,
+                                                                 "cells": allcells}}]
+                            if tracer:
+                                jsondata['boundaries'][0]['tracer'] = tracers[0]
         return jsondata
 
     def output_json(self):
@@ -2801,7 +2807,7 @@ class t2data(object):
         jsondata['gravity'] = self.parameter['gravity']
         jsondata['thermodynamics'] = 'ifc67'
         jsondata.update(self.mesh_json(geo, mesh_filename))
-        eos_data, tracer_data = self.eos_json(eos)
+        eos_data, tracer_data, primary_converter = self.eos_json(eos)
         jsondata.update(eos_data)
         if tracer_data: jsondata.update(tracer_data)
         jsondata.update(self.timestepping_json())
@@ -2815,11 +2821,12 @@ class t2data(object):
             effective_incs = self.effective_incons(incons)
         jsondata.update(self.initial_json(geo, effective_incs,
                                           jsondata['eos']['name'],
-                                          tracer_data))
+                                          primary_converter, tracer_data))
         if bdy_incons is None:
             bdy_incons = effective_incs
         jsondata.update(self.boundaries_json(geo, bdy_incons, atmos_volume,
                                              jsondata['eos']['name'],
+                                             primary_converter,
                                              mesh_coords, tracer_data))
         jsondata.update(self.generators_json(geo, jsondata['eos']['name'],
                                              tracer_data))

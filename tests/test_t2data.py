@@ -634,36 +634,36 @@ class t2dataTestCase(unittest.TestCase):
 
         def eos_test():
             eos = None
-            eos_data, tracer_data = dat.eos_json(eos)
+            eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'we'})
             self.assertIsNone(tracer_data)
 
             eos = 2
-            eos_data, tracer_data = dat.eos_json(eos)
+            eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'wce'})
             self.assertIsNone(tracer_data)
 
             eos = 'EWAV'
-            eos_data, tracer_data = dat.eos_json(eos)
+            eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'wae'})
             self.assertIsNone(tracer_data)
 
             eos = 'EWT'
-            eos_data, tracer_data = dat.eos_json(eos)
+            eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'we'})
             self.assertEqual(tracer_data['tracer'],
                              {'name': 'tracer', 'phase': 'liquid'})
 
             eos = 'EWTD'
             dat.diffusion = [[-1e-6, -1e-6], [-1e-6, -1e-6]]
-            eos_data, tracer_data = dat.eos_json(eos)
+            eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'we'})
             self.assertEqual(tracer_data['tracer'],
                              {'name': 'tracer', 'phase': 'liquid', 'diffusion': 1e-6})
 
             dat.diffusion = [[1e-5, 1e-6], [1e-6, 1e-5]]
             with self.assertRaises(Exception):
-                eos_data, tracer_data = dat.eos_json(eos)
+                eos_data, tracer_data, pc = dat.eos_json(eos)
 
             eos = 3
             with self.assertRaises(Exception):
@@ -901,13 +901,17 @@ class t2dataTestCase(unittest.TestCase):
             dat.capillarity = {'type': 2, 'parameters': [0., 1., 0., 1.]}
             self.assertRaises(Exception, dat.capillary_pressure_json)
 
-        def primary_to_region_test():
-            self.assertEqual(primary_to_region_we([2.e5, 20.]), 1)
-            self.assertEqual(primary_to_region_we([0.5e5, 100.]), 2)
-            self.assertEqual(primary_to_region_we([2.e5, 0.5]), 4)
-            self.assertEqual(primary_to_region_wge([2.e5, 20, 0.1e5]), 1)
-            self.assertEqual(primary_to_region_wge([2.e5, 100, 1.5e5]), 2)
-            self.assertEqual(primary_to_region_wge([1.e5, 0.1, 0.5e5]), 4)
+        def convert_primary_test():
+            def case(p, converter, expected_v, expected_r):
+                v, r = converter(p)
+                self.assertEqual(expected_v, v)
+                self.assertEqual(expected_r, r)
+            case([2.e5, 20.], convert_primary_eos_1, [2.e5, 20.], 1)
+            case([0.5e5, 100.], convert_primary_eos_1, [0.5e5, 100.], 2)
+            case([2.e5, 0.5], convert_primary_eos_1, [2.e5, 0.5], 4)
+            case([2.e5, 20, 0.1e5], convert_primary_eos_2_or_4, [2.e5, 20, 0.1e5], 1)
+            case([2.e5, 100, 1.5e5], convert_primary_eos_2_or_4, [2.e5, 100, 1.5e5], 2)
+            case([1.e5, 0.1, 0.5e5], convert_primary_eos_2_or_4, [1.e5, 0.1, 0.5e5], 4)
 
         def initial_test():
 
@@ -916,7 +920,7 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'w'
 
             incons = [50.e5, 20.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons[:1])
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
@@ -924,7 +928,7 @@ class t2dataTestCase(unittest.TestCase):
             primary1 = [2.e5, 15.]
             primary = [primary1 for i in range(nblks)]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary1[:1])
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
@@ -936,7 +940,7 @@ class t2dataTestCase(unittest.TestCase):
             primary[:n2] = primary1
             primary[n2:] = primary2
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(len(j['initial']['primary']), nblks)
             self.assertEqual(j['initial']['region'], 2)
             self.assertTrue(all([j['initial']['primary'][i] == primary1[:1]
@@ -948,24 +952,24 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
 
             incons = 'model_ns.h5'
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['filename'], incons)
             json.dumps(j)
 
             incons = [3.e5, 35.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
 
             incons = [1.e5, 130.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 2)
             json.dumps(j)
 
             incons = [10.e5, 0.6]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 4)
             json.dumps(j)
@@ -973,14 +977,14 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             primary = [2.e5, 15.]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary)
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
 
             primary = [0.3e5, 110.]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary)
             self.assertEqual(j['initial']['region'], 2)
             json.dumps(j)
@@ -992,7 +996,7 @@ class t2dataTestCase(unittest.TestCase):
             primary[:n2] = primary1
             primary[n2:] = primary2
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(len(j['initial']['primary']), nblks)
             self.assertEqual(len(j['initial']['region']), nblks)
             self.assertTrue(all([j['initial']['primary'][i] == primary1
@@ -1008,7 +1012,8 @@ class t2dataTestCase(unittest.TestCase):
             dat.multi['eos'] = 'EWT'
             primary = [2.e5, 15., 1e-6]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, 'we', {'name': 'tracer'})
+            j = dat.initial_json(geo, incons, 'we', convert_primary_eos_1,
+                                 {'name': 'tracer'})
             self.assertEqual(j['initial']['primary'], primary[:2])
             self.assertEqual(j['initial']['region'], 1)
             self.assertEqual(j['initial']['tracer'], 1e-6)
@@ -1769,7 +1774,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'w'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1782,7 +1788,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1796,7 +1803,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0, X0 = 1.e5, 15., 1.e-6
             bdy_incons = dat.grid.incons((P0, T0, X0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords,
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords,
                                     {'name': 'tracer'})
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
@@ -1811,7 +1819,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0 = 0.8e5, 100.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 2)
@@ -1824,7 +1833,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, Sv0 = 3.e5, 0.2
             bdy_incons = dat.grid.incons((P0, Sv0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, Sv0])
             self.assertEqual(j['boundaries'][0]['region'], 4)
@@ -1837,7 +1847,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'wae'
             P0, T0, Pa0 = 1.e5, 15., 0.1e5
             bdy_incons = dat.grid.incons((P0, T0, Pa0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_2_or_4, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0, Pa0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1864,7 +1875,8 @@ class t2dataTestCase(unittest.TestCase):
             Pb, Tb = 4.e5, 25.
             for blk in dat.grid.blocklist[-geo.num_columns:]:
                 bdy_incons[blk.name] = (Pb, Tb)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 8)
             for ibc, bc in enumerate(j['boundaries'][:4]):
                 self.assertEqual(bc,
@@ -1897,7 +1909,8 @@ class t2dataTestCase(unittest.TestCase):
             Ps, Ts = 3.e5, 20.
             for blk in dat.grid.blocklist[-len(cell_indices):]:
                 bdy_incons[blk.name] = (Ps, Ts)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 12)
             for ibc, bc in enumerate(j['boundaries'][-4:]):
                 cellindex = cell_indices[ibc]
@@ -1912,7 +1925,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1935,7 +1949,8 @@ class t2dataTestCase(unittest.TestCase):
             Pb, Tb = 4.e5, 25.
             for blk in dat.grid.blocklist[-geo.num_columns:]:
                 bdy_incons[blk.name] = (Pb, Tb)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 8)
             for ibc, bc in enumerate(j['boundaries'][:4]):
                 self.assertEqual(bc,
@@ -1974,7 +1989,8 @@ class t2dataTestCase(unittest.TestCase):
             Ps, Ts = 3.e5, 20.
             for blk in dat.grid.blocklist[-len(cell_indices):]:
                 bdy_incons[blk.name] = (Ps, Ts)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [Ps, Ts])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1990,7 +2006,7 @@ class t2dataTestCase(unittest.TestCase):
         timestepping_test()
         relative_permeability_test()
         capillary_pressure_test()
-        primary_to_region_test()
+        convert_primary_test()
         initial_test()
         generators_test()
         network_test()
