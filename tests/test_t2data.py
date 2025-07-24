@@ -643,6 +643,11 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(eos_data['eos'], {'name': 'wce'})
             self.assertIsNone(tracer_data)
 
+            eos = 'EWA'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wae'})
+            self.assertIsNone(tracer_data)
+
             eos = 'EWAV'
             eos_data, tracer_data, pc = dat.eos_json(eos)
             self.assertEqual(eos_data['eos'], {'name': 'wae'})
@@ -665,7 +670,7 @@ class t2dataTestCase(unittest.TestCase):
             with self.assertRaises(Exception):
                 eos_data, tracer_data, pc = dat.eos_json(eos)
 
-            eos = 3
+            eos = 8
             with self.assertRaises(Exception):
                 dat.eos_json(eos)
 
@@ -1017,6 +1022,33 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(j['initial']['primary'], primary[:2])
             self.assertEqual(j['initial']['region'], 1)
             self.assertEqual(j['initial']['tracer'], 1e-6)
+            json.dumps(j)
+
+            eos = 'wae'  # EOS3 tests
+
+            P, X, T, Pa = 8.e5, 1e-6, 120., 6220.7482073324345
+            incons = [P, X, T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 1)
+            json.dumps(j)
+
+            P, X, T, Pa = 1.5e5, 0.1, 120., 9854.639297136204
+            incons = [P, X, T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 2)
+            json.dumps(j)
+            
+            P, Sv, Pa = 8.e5, 0.3, 1e5
+            T = t2thermo.tsat(P - Pa)
+            incons = [P, Sv + 10., T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, Sv, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 4)
             json.dumps(j)
 
         def generators_test():

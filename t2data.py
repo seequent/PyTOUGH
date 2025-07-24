@@ -18,13 +18,13 @@ from t2incons import *
 from math import ceil
 import struct
 from os.path import splitext
+import t2thermo
 
 def convert_primary_eos_1(primary):
     """Returns Waiwera primary variables and thermodynamic region deduced
     from primary variables for EOS 1."""
-    from t2thermo import region
     if primary[1] < 1.5: return primary, 4
-    else: return primary, region(primary[1], primary[0])
+    else: return primary, t2thermo.region(primary[1], primary[0])
 
 def convert_primary_eos_2_or_4(primary):
     """Returns Waiwera primary variables and thermodynamic region deduced
@@ -34,9 +34,53 @@ def convert_primary_eos_2_or_4(primary):
     v, region = convert_primary_eos_1([pwater, primary[1]])
     return primary, region
 
-convert_primary_funcs = {'W': convert_primary_eos_1, 'EW': convert_primary_eos_1,
-                         'EWC': convert_primary_eos_2_or_4,
-                         'EWAV': convert_primary_eos_2_or_4}
+def convert_primary_eos_3(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 3.
+    """
+    ww, aw = 18.01528, 28.96
+
+    def region_1_air_partial_pressure(Xa):
+        # air partial pressure from mass fraction in liquid phase
+        H = 1.e-10
+        Xmol = Xa * ww / ((1. - Xa) * aw + Xa * ww)
+        return Xmol / H
+
+    def region_2_air_partial_pressure(P, T, Xa, Pa):
+        # air partial pressure from total pressure, temperature,
+        # mass fraction and initial estimate, in vapour phase
+        from scipy.optimize import fsolve
+        R = 8314.56
+        Tk = T + t2thermo.tc_k
+        def f(Pa, Tk, P, Xa):
+            return R * Tk * t2thermo.supst(T, P - Pa)[0] * Xa - Pa * (1. - Xa) * aw
+        Pa = fsolve(f, x0 = Pa, args = (Tk, P, Xa))[0]
+        Pa = max(Pa, 0)
+        return Pa
+
+    if primary[1] < 1.5: # single-phase (P, X, T)
+        Xa, T = primary[1:]
+        Pa = region_1_air_partial_pressure(Xa)
+        P = primary[0]
+        Pw = P - Pa
+        if T <= 350:
+            Psat = t2thermo.sat(T)
+            region = 1 if Pw > Psat else 2
+        else:
+            region = 2
+        if region == 2:
+            Pa = region_2_air_partial_pressure(P, T, Xa, Pa)
+        variable = [P, T, Pa]
+    else: #  two-phase (P, Sv + 10, T)
+        P, Sv10, T = primary[:]
+        Sv = Sv10 - 10.
+        Pw = t2thermo.sat(T)
+        Pa = P - Pw
+        variable = [P, Sv, Pa]
+        region = 4
+
+    return variable, region
+
 waiwera_eos_num_primary = {'w': 1, 'we': 2, 'wce': 3, 'wae': 3}
 
 def trim_trailing_nones(vals):
@@ -2114,11 +2158,12 @@ class t2data(object):
         variable conversion function for the EOS.
         """
         jsondata = {}
-        supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWAV': 'wae',
-                         'EWT': 'we', 'EWTD': 'we'}
+        supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWA': 'wae',
+                         'EWAV': 'wae', 'EWT': 'we', 'EWTD': 'we'}
         primary_converters = {'W': convert_primary_eos_1,
                               'EW': convert_primary_eos_1,
                               'EWC': convert_primary_eos_2_or_4,
+                              'EWA': convert_primary_eos_3,
                               'EWAV': convert_primary_eos_2_or_4,
                               'EWT': convert_primary_eos_1,
                               'EWTD': convert_primary_eos_1
@@ -2798,7 +2843,7 @@ class t2data(object):
         return jsondata
 
     def json(self, geo, mesh_filename, atmos_volume = 1.e25, incons = None,
-                    eos = None, bdy_incons = None, mesh_coords = 'xyz'):
+             eos = None, bdy_incons = None, mesh_coords = 'xyz'):
         """Returns a Waiwera JSON dictionary representing the t2data object
         (with associated mulgrid geometry)."""
 
