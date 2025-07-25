@@ -1051,6 +1051,17 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(j['initial']['region'], 4)
             json.dumps(j)
 
+            # EOS4 test with MOP(19) = 2 (EOS3-style init)
+            dat.multi['eos'] = 'EWAV'
+            P, X, T, Pa = 8.e5, 1e-6, 120., 6220.9968260563
+            incons = [P, X, T]
+            dat.parameter['option'][19] = 2
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 1)
+            json.dumps(j)
+
         def generators_test():
 
             dat.parameter['option'][12] = 0
