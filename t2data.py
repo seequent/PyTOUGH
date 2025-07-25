@@ -2189,6 +2189,14 @@ class t2data(object):
                 if jsondata['eos']['name'] == 'w':
                     jsondata['eos']['temperature'] = self.parameter['default_incons'][1]
                 primary_converter = primary_converters[aut2eosname]
+                if aut2eosname == 'EWA':
+                    if self.parameter['option'][19] > 0:
+                        raise Exception ('EOS3 with MOP(19) > 0 not supported.')
+                elif aut2eosname == 'EWAV':
+                    if self.parameter['option'][19] == 1:
+                        raise Exception ('EOS4 with MOP(19) = 1 not supported.')
+                    elif self.parameter['option'][19] == 2:
+                        primary_converter = convert_primary_eos_3
             else:
                 raise Exception ('EOS not supported:' + aut2eosname)
         else:
