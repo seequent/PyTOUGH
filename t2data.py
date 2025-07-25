@@ -38,7 +38,7 @@ def convert_primary_eos_3(primary):
     """Returns Waiwera primary variables and thermodynamic region deduced
     from primary variables for EOS 3.
     """
-    ww, aw = 18.01528, 28.96
+    ww, aw = 18.016, 28.96
 
     def region_1_air_partial_pressure(Xa):
         # air partial pressure from mass fraction in liquid phase
