@@ -1371,20 +1371,21 @@ unique.
      applied from the ``parameter``
      :ref:`property <sec:t2data:parameter>`.
 
--  | **eos**: string, integer or ``None``
-   | Equation of state used for the simulation. For AUTOUGH2
-     simulations, this can generally be set to ``None``, and the EOS
-     will be read from the ``t2data`` ``simulator`` or ``multi``
-     properties. Otherwise, it can be specified as an integer
-     corresponding to the EOS number (1 being pure water, 2 being water
-     / CO\ :math:`_2` etc.) or as a string corresponding to the AUTOUGH2
-     EOS names (EOS1 being 'EW', EOS2 being 'EWC' etc.). Note that for
-     integer values, only EOS modules 1, 2 and 4 are supported. For
-     AUTOUGH2 EOS names, these correspond to 'W', 'EW', 'EWC' and
-     'EWAV'. The AUTOUGH2 passive tracer EOS modules 'EWT' and 'ETD' are
-     also supported (the latter supporting only constant diffusivity,
-     i.e. all elements of the ``diffusion`` property must be negative
-     and equal).
+- | **eos**: string, integer or ``None`` | Equation of state used for
+   the simulation. For AUTOUGH2 simulations, this can generally be set
+   to ``None``, and the EOS will be read from the ``t2data``
+   ``simulator`` or ``multi`` properties. Otherwise, it can be
+   specified as an integer corresponding to the EOS number (1 being
+   pure water, 2 being water / CO\ :math:`_2` etc.) or as a string
+   corresponding to the AUTOUGH2 EOS names (EOS1 being 'EW', EOS2
+   being 'EWC' etc.). Note that for integer values, only EOS modules
+   1, 2, 3 and 4 are supported. For AUTOUGH2 EOS names, these
+   correspond to 'W', 'EW', 'EWC', 'EWA' and 'EWAV'. The AUTOUGH2
+   passive tracer EOS modules 'EWT' and 'ETD' are also supported (the
+   latter supporting only constant diffusivity, i.e. all elements of
+   the ``diffusion`` property must be negative and equal). For EOS4
+   ('EWAV'), alternative initialization using EOS3-style primary
+   variables via MOP(19) = 2 is supported.
 
 -  | **bdy_incons**: :ref:`t2incon <incons>`, or ``None``
    | TOUGH2 initial conditions from which boundary conditions are to be
