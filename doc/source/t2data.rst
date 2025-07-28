@@ -1380,12 +1380,13 @@ unique.
    corresponding to the AUTOUGH2 EOS names (EOS1 being 'EW', EOS2
    being 'EWC' etc.). Note that for integer values, only EOS modules
    1, 2, 3 and 4 are supported. For AUTOUGH2 EOS names, these
-   correspond to 'W', 'EW', 'EWC', 'EWA' and 'EWAV'. The AUTOUGH2
-   passive tracer EOS modules 'EWT' and 'ETD' are also supported (the
-   latter supporting only constant diffusivity, i.e. all elements of
-   the ``diffusion`` property must be negative and equal). For EOS4
-   ('EWAV'), alternative initialization using EOS3-style primary
-   variables via MOP(19) = 2 is supported.
+   correspond to 'W', 'EW', 'EWC' (or 'EWCX'), 'EWA' and 'EWAV' (or
+   'EWAX'). The AUTOUGH2 passive tracer EOS modules 'EWT' and 'ETD'
+   are also supported (the latter supporting only constant
+   diffusivity, i.e. all elements of the ``diffusion`` property must
+   be negative and equal). For EOS4 ('EWAV'), alternative
+   initialization using EOS3-style primary variables via MOP(19) = 2
+   is supported.
 
 -  | **bdy_incons**: :ref:`t2incon <incons>`, or ``None``
    | TOUGH2 initial conditions from which boundary conditions are to be

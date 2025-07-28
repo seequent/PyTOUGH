@@ -674,6 +674,20 @@ class t2dataTestCase(unittest.TestCase):
             with self.assertRaises(Exception):
                 dat.eos_json(eos)
 
+            eos = 'EWSG'
+            with self.assertRaises(Exception):
+                dat.eos_json(eos)
+
+            eos = 'EWAX'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wae'})
+            self.assertIsNone(tracer_data)
+
+            eos = 'EWCX'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wce'})
+            self.assertIsNone(tracer_data)
+
         def output_test():
 
             dat = t2data()

@@ -2159,14 +2159,17 @@ class t2data(object):
         """
         jsondata = {}
         supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWA': 'wae',
-                         'EWAV': 'wae', 'EWT': 'we', 'EWTD': 'we'}
+                         'EWAV': 'wae', 'EWT': 'we', 'EWTD': 'we',
+                         'EWAX': 'wae', 'EWCX': 'wce'}
         primary_converters = {'W': convert_primary_eos_1,
                               'EW': convert_primary_eos_1,
                               'EWC': convert_primary_eos_2_or_4,
                               'EWA': convert_primary_eos_3,
                               'EWAV': convert_primary_eos_2_or_4,
                               'EWT': convert_primary_eos_1,
-                              'EWTD': convert_primary_eos_1
+                              'EWTD': convert_primary_eos_1,
+                              'EWAX': convert_primary_eos_2_or_4,
+                              'EWCX': convert_primary_eos_2_or_4
                               }
         aut2eosname = ''
         primary_converter = None
@@ -2191,14 +2194,16 @@ class t2data(object):
                 primary_converter = primary_converters[aut2eosname]
                 if aut2eosname == 'EWA':
                     if self.parameter['option'][19] > 0:
-                        raise Exception ('EOS3 with MOP(19) > 0 not supported.')
-                elif aut2eosname == 'EWAV':
+                        raise Exception ('EOS %s with MOP(19) > 0 not supported.' % \
+                                         aut2eosname)
+                elif aut2eosname in ['EWAV', 'EWAX']:
                     if self.parameter['option'][19] == 1:
-                        raise Exception ('EOS4 with MOP(19) = 1 not supported.')
+                        raise Exception ('EOS %s with MOP(19) = 1 not supported.' % \
+                                         aut2eosname)
                     elif self.parameter['option'][19] == 2:
                         primary_converter = convert_primary_eos_3
             else:
-                raise Exception ('EOS not supported:' + aut2eosname)
+                raise Exception ('EOS %s not supported.' % aut2eosname)
         else:
             raise Exception ('EOS not detected.')
         if aut2eosname in ['EWT', 'EWTD']:
