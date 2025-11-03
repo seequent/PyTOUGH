@@ -32,6 +32,6 @@ For more detailed information on PyTOUGH, consult the [user guide](https://pytou
 
 # What's new in PyTOUGH?
 
-The latest stable version is 1.6.5, which has:
+The latest stable version is 1.6.6, which has:
 
-* an improvement to the mulgrid column_track() function, to avoid discarding small columns in slice plots for grids with a large range of column sizes
+* ability to convert EOS3 models to Waiwera JSON input
