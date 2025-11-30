@@ -18,7 +18,7 @@ from .t2incons import *
 from math import ceil
 import struct
 from os.path import splitext
-import t2thermo
+from . import t2thermo
 
 
 def convert_primary_eos_1(primary):
