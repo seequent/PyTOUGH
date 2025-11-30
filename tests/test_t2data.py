@@ -12,6 +12,9 @@ def column_nan_to_num(x):
             if dt[0].name.startswith('float'): x[key] = np.nan_to_num(x[key])
         return x
 
+default_separator_pressure = 0.55e6
+default_2_stage_separator_pressure = [1.45e6, 0.55e6]
+
 class t2data_stats(t2data):
     """Variant of t2data class with extra properties for vital statistics
     of a t2data object- for comparisons between t2data objects that
@@ -551,6 +554,7 @@ class t2dataTestCase(unittest.TestCase):
         dat.filename = filename_base + '.dat'
         dat.parameter['gravity'] = gravity
         dat.multi = {'eos': 'EW'}
+        dat.diffusion = [[-1e-6, -1e-6], [-1e-6, -1e-6]]
 
         def basic_test():
             j = dat.json(geo, mesh_filename)
@@ -630,14 +634,59 @@ class t2dataTestCase(unittest.TestCase):
 
         def eos_test():
             eos = None
-            self.assertEqual(dat.eos_json(eos)['eos'], {'name': 'we'})
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'we'})
+            self.assertIsNone(tracer_data)
+
             eos = 2
-            self.assertEqual(dat.eos_json(eos)['eos'], {'name': 'wce'})
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wce'})
+            self.assertIsNone(tracer_data)
+
+            eos = 'EWA'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wae'})
+            self.assertIsNone(tracer_data)
+
             eos = 'EWAV'
-            self.assertEqual(dat.eos_json(eos)['eos'], {'name': 'wae'})
-            eos = 3
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wae'})
+            self.assertIsNone(tracer_data)
+
+            eos = 'EWT'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'we'})
+            self.assertEqual(tracer_data['tracer'],
+                             {'name': 'tracer', 'phase': 'liquid'})
+
+            eos = 'EWTD'
+            dat.diffusion = [[-1e-6, -1e-6], [-1e-6, -1e-6]]
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'we'})
+            self.assertEqual(tracer_data['tracer'],
+                             {'name': 'tracer', 'phase': 'liquid', 'diffusion': 1e-6})
+
+            dat.diffusion = [[1e-5, 1e-6], [1e-6, 1e-5]]
+            with self.assertRaises(Exception):
+                eos_data, tracer_data, pc = dat.eos_json(eos)
+
+            eos = 8
             with self.assertRaises(Exception):
                 dat.eos_json(eos)
+
+            eos = 'EWSG'
+            with self.assertRaises(Exception):
+                dat.eos_json(eos)
+
+            eos = 'EWAX'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wae'})
+            self.assertIsNone(tracer_data)
+
+            eos = 'EWCX'
+            eos_data, tracer_data, pc = dat.eos_json(eos)
+            self.assertEqual(eos_data['eos'], {'name': 'wce'})
+            self.assertIsNone(tracer_data)
 
         def output_test():
 
@@ -742,6 +791,16 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(j['time']['step']['adapt']['reduction'], reduction_tough2)
             self.assertEqual(j['time']['step']['adapt']['amplification'], amplification)
             self.assertEqual(j['time']['step']['size'], start_timestep)
+            json.dumps(j)
+
+            dat.parameter['max_timesteps'] = None
+            j = dat.timestepping_json()
+            self.assertEqual(j['time']['step']['maximum']['number'], 0)
+            json.dumps(j)
+
+            dat.parameter['max_timesteps'] = -1
+            j = dat.timestepping_json()
+            self.assertIsNone(j['time']['step']['maximum']['number'])
             json.dumps(j)
 
             dat.type = 'AUTOUGH2'
@@ -861,13 +920,17 @@ class t2dataTestCase(unittest.TestCase):
             dat.capillarity = {'type': 2, 'parameters': [0., 1., 0., 1.]}
             self.assertRaises(Exception, dat.capillary_pressure_json)
 
-        def primary_to_region_test():
-            self.assertEqual(primary_to_region_we([2.e5, 20.]), 1)
-            self.assertEqual(primary_to_region_we([0.5e5, 100.]), 2)
-            self.assertEqual(primary_to_region_we([2.e5, 0.5]), 4)
-            self.assertEqual(primary_to_region_wge([2.e5, 20, 0.1e5]), 1)
-            self.assertEqual(primary_to_region_wge([2.e5, 100, 1.5e5]), 2)
-            self.assertEqual(primary_to_region_wge([1.e5, 0.1, 0.5e5]), 4)
+        def convert_primary_test():
+            def case(p, converter, expected_v, expected_r):
+                v, r = converter(p)
+                self.assertEqual(expected_v, v)
+                self.assertEqual(expected_r, r)
+            case([2.e5, 20.], convert_primary_eos_1, [2.e5, 20.], 1)
+            case([0.5e5, 100.], convert_primary_eos_1, [0.5e5, 100.], 2)
+            case([2.e5, 0.5], convert_primary_eos_1, [2.e5, 0.5], 4)
+            case([2.e5, 20, 0.1e5], convert_primary_eos_2_or_4, [2.e5, 20, 0.1e5], 1)
+            case([2.e5, 100, 1.5e5], convert_primary_eos_2_or_4, [2.e5, 100, 1.5e5], 2)
+            case([1.e5, 0.1, 0.5e5], convert_primary_eos_2_or_4, [1.e5, 0.1, 0.5e5], 4)
 
         def initial_test():
 
@@ -876,7 +939,7 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'w'
 
             incons = [50.e5, 20.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons[:1])
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
@@ -884,7 +947,7 @@ class t2dataTestCase(unittest.TestCase):
             primary1 = [2.e5, 15.]
             primary = [primary1 for i in range(nblks)]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary1[:1])
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
@@ -896,7 +959,7 @@ class t2dataTestCase(unittest.TestCase):
             primary[:n2] = primary1
             primary[n2:] = primary2
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(len(j['initial']['primary']), nblks)
             self.assertEqual(j['initial']['region'], 2)
             self.assertTrue(all([j['initial']['primary'][i] == primary1[:1]
@@ -908,24 +971,24 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
 
             incons = 'model_ns.h5'
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['filename'], incons)
             json.dumps(j)
 
             incons = [3.e5, 35.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
 
             incons = [1.e5, 130.]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 2)
             json.dumps(j)
 
             incons = [10.e5, 0.6]
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], incons)
             self.assertEqual(j['initial']['region'], 4)
             json.dumps(j)
@@ -933,14 +996,14 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             primary = [2.e5, 15.]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary)
             self.assertEqual(j['initial']['region'], 1)
             json.dumps(j)
 
             primary = [0.3e5, 110.]
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(j['initial']['primary'], primary)
             self.assertEqual(j['initial']['region'], 2)
             json.dumps(j)
@@ -952,7 +1015,7 @@ class t2dataTestCase(unittest.TestCase):
             primary[:n2] = primary1
             primary[n2:] = primary2
             incons = dat.grid.incons(primary)
-            j = dat.initial_json(geo, incons, eos)
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_1)
             self.assertEqual(len(j['initial']['primary']), nblks)
             self.assertEqual(len(j['initial']['region']), nblks)
             self.assertTrue(all([j['initial']['primary'][i] == primary1
@@ -965,14 +1028,62 @@ class t2dataTestCase(unittest.TestCase):
                                  for i in range(n2, nblks)]))
             json.dumps(j)
 
+            dat.multi['eos'] = 'EWT'
+            primary = [2.e5, 15., 1e-6]
+            incons = dat.grid.incons(primary)
+            j = dat.initial_json(geo, incons, 'we', convert_primary_eos_1,
+                                 {'name': 'tracer'})
+            self.assertEqual(j['initial']['primary'], primary[:2])
+            self.assertEqual(j['initial']['region'], 1)
+            self.assertEqual(j['initial']['tracer'], 1e-6)
+            json.dumps(j)
+
+            eos = 'wae'  # EOS3 tests
+
+            P, X, T, Pa = 8.e5, 1e-6, 120., 6220.9968260563
+            incons = [P, X, T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 1)
+            json.dumps(j)
+
+            P, X, T, Pa = 1.5e5, 0.1, 120., 9854.6392971362
+            incons = [P, X, T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 2)
+            json.dumps(j)
+
+            P, Sv, Pa = 8.e5, 0.3, 1e5
+            T = t2thermo.tsat(P - Pa)
+            incons = [P, Sv + 10., T]
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, Sv, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 4)
+            json.dumps(j)
+
+            # EOS4 test with MOP(19) = 2 (EOS3-style init)
+            dat.multi['eos'] = 'EWAV'
+            P, X, T, Pa = 8.e5, 1e-6, 120., 6220.9968260563
+            incons = [P, X, T]
+            dat.parameter['option'][19] = 2
+            j = dat.initial_json(geo, incons, eos, convert_primary_eos_3)
+            self.assertTrue(np.allclose(np.array(j['initial']['primary']),
+                                        np.array([P, T, Pa]), rtol = 1e-9))
+            self.assertEqual(j['initial']['region'], 1)
+            json.dumps(j)
+
         def generators_test():
 
             dat.parameter['option'][12] = 0
 
-            def generator_json(gen, eos = 'we'):
+            def generator_json(gen, eos = 'we', tracer = None):
                 dat.clear_generators()
                 dat.add_generator(gen)
-                j = dat.generators_json(geo, eos)
+                j = dat.generators_json(geo, eos, tracer)
                 self.assertEqual(len(j['source']), 1)
                 return j['source'][0]
 
@@ -1005,6 +1116,36 @@ class t2dataTestCase(unittest.TestCase):
             g = generator_json(gen)
             self.assertEqual(g['rate'], q)
             self.assertEqual(g['component'], 2)
+            json.dumps(g)
+
+            # COM2 tracer
+            gen = t2generator(name = name, block = blkname,
+                              type = 'COM2', gx = q)
+            g = generator_json(gen, eos = 'we', tracer = {'name': 'foo'})
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['tracer'], q)
+            self.assertFalse('component' in g)
+            json.dumps(g)
+
+            # TRAC
+            gen = t2generator(name = name, block = blkname,
+                              type = 'TRAC', gx = q)
+            g = generator_json(gen, eos = 'we', tracer = {'name': 'foo'})
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['tracer'], q)
+            self.assertFalse('component' in g)
+            json.dumps(g)
+
+            # TRAC table
+            t = [0., 10., 240., 350.]
+            q = [2.e-6, 2.5e-6, 2.9e-6, 3.1e-6]
+            gen = t2generator(name = name, block = blkname,
+                              type = 'TRAC', time = t, rate = q)
+            g = generator_json(gen, eos = 'we', tracer = {'name': 'foo'})
+            self.assertEqual(g['tracer'], [list(r) for r in zip(t, q)])
+            self.assertFalse('rate' in g)
+            self.assertFalse('component' in g)
+            self.assertFalse('enthalpy' in g)
             json.dumps(g)
 
             # heat
@@ -1063,6 +1204,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG
@@ -1073,6 +1215,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG with initial rate
@@ -1084,6 +1227,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertEqual(g['rate'], q0)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG with steam limiter
@@ -1094,7 +1238,8 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'steam', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG with steam limiter and separator pressure
@@ -1106,8 +1251,20 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'],
-                             {'type': 'steam', 'limit': qmax, 'separator_pressure': psep})
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': psep})
+            json.dumps(g)
+
+            # DELG with steam limiter and 2-stage separator
+            qmax = 5.
+            gen = t2generator(name = name, block = blkname,
+                              type = 'DELG', gx = PI, ex = Pwb, fg = -1, hg = qmax)
+            g = generator_json(gen)
+            self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
+            self.assertEqual(g['direction'], 'production')
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_2_stage_separator_pressure})
             json.dumps(g)
 
             # DELG with table of PI vs time
@@ -1123,6 +1280,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG with table of cutoff pressure vs enthalpy
@@ -1139,6 +1297,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELG with table of cutoff pressure vs enthalpy and steam limiter
@@ -1152,7 +1311,8 @@ class t2dataTestCase(unittest.TestCase):
                               'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'steam', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELS
@@ -1178,8 +1338,8 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'],
-                             {'type': 'steam', 'limit': qmax, 'separator_pressure': psep})
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': psep})
             json.dumps(g)
 
             # DELT with total flow limiter
@@ -1193,7 +1353,8 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'total', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'total': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELT with negative limit specified
@@ -1208,6 +1369,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELT with table of PI vs time
@@ -1223,6 +1385,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELT with table of cutoff pressure vs enthalpy and total flow limiter
@@ -1239,7 +1402,8 @@ class t2dataTestCase(unittest.TestCase):
                               'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'total', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'total': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELW with liquid flow limiter
@@ -1253,7 +1417,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'water', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'water': qmax})
             json.dumps(g)
 
             # DELW with negative limit specified
@@ -1268,6 +1432,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELW with table of PI vs time
@@ -1283,6 +1448,7 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
             self.assertFalse('limiter' in g)
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # DELW with table of cutoff pressure vs enthalpy and liquid flow limiter
@@ -1299,7 +1465,8 @@ class t2dataTestCase(unittest.TestCase):
                               'productivity': PI})
             self.assertEqual(g['direction'], 'production')
             self.assertFalse('rate' in g)
-            self.assertEqual(g['limiter'], {'type': 'water', 'limit': qmax})
+            self.assertEqual(g['limiter'], {'water': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
             json.dumps(g)
 
             # RECH with specified mass flow (effectively same as MASS)
@@ -1367,25 +1534,288 @@ class t2dataTestCase(unittest.TestCase):
             self.assertEqual(g['deliverability'],
                              {'pressure': Pwb, 'productivity': PI, 'threshold': Pthreshold})
             self.assertEqual(g['direction'], 'production')
-            self.assertFalse('limiter' in g)
+            self.assertEqual(g['limiter'], {'total': abs(q)})
+            self.assertEqual(g['separator'], {'pressure': Pwb})
             json.dumps(g)
 
             # MASD with mass table
             t = [0., 10., 240., 350., 750.]
             q = [-10., -12., -14., -13., -16.]
+            gx = 16
             PI = 1.e-12
             Pwb = 2.5e5
             Pthreshold = 3.e5
             gen = t2generator(name = name, block = blkname,
                               type = 'MASD', ex = PI, fg = Pwb, hg = Pthreshold,
-                              time = t, rate = q)
+                              time = t, rate = q, gx = gx)
             g = generator_json(gen)
             self.assertEqual(g['rate'], [list(r) for r in zip(t, q)])
             self.assertEqual(g['deliverability'],
                              {'pressure': Pwb, 'productivity': PI, 'threshold': Pthreshold})
             self.assertEqual(g['direction'], 'production')
+            self.assertEqual(g['limiter'], {'total': gx})
+            self.assertEqual(g['separator'], {'pressure': Pwb})
+            json.dumps(g)
+
+            # DMAK
+            PI = 1.e-12
+            Pwb = 2.e5
+            qmax = 10.
+            gen = t2generator(name = name, block = blkname,
+                              type = 'DMAK', gx = PI, ex = Pwb, hg = qmax)
+            g = generator_json(gen)
+            self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
+            self.assertEqual(g['direction'], 'production')
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_separator_pressure})
+            json.dumps(g)
+
+            # DMAK with 2-stage separator
+            gen = t2generator(name = name, block = blkname,
+                              type = 'DMAK', gx = PI, ex = Pwb, fg = -1, hg = qmax)
+            g = generator_json(gen)
+            self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
+            self.assertEqual(g['direction'], 'production')
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['limiter'], {'steam': qmax})
+            self.assertEqual(g['separator'], {'pressure': default_2_stage_separator_pressure})
+            json.dumps(g)
+
+            # DMAT
+            PI = 1.e-12
+            Pwb = 2.e5
+            qmax = 20.
+            psep = 65.e5
+            gen = t2generator(name = name, block = blkname,
+                              type = 'DMAT', gx = PI, ex = Pwb, hg = qmax, fg = psep)
+            g = generator_json(gen)
+            self.assertEqual(g['deliverability'], {'pressure': Pwb, 'productivity': PI})
+            self.assertEqual(g['direction'], 'production')
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['limiter'], {'total': qmax})
+            self.assertEqual(g['separator'], {'pressure': psep})
+            json.dumps(g)
+
+            # IMAK
+            inj = 1.e-4
+            P0 = 45.e5
+            qmax = 20.
+            h = 4.4e5
+            gen = t2generator(name = name, block = blkname,
+                              type = 'IMAK', gx = qmax, ex = h, hg = P0, fg = inj)
+            g = generator_json(gen)
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['injectivity'], {'coefficient': inj, 'pressure': P0})
+            self.assertFalse('enthalpy' in g) # enthalpy defined in reinjector output
+            self.assertEqual(g['direction'], 'injection')
+            self.assertEqual(g['limiter'], {'total': qmax})
+            json.dumps(g)
+
+            # XINJ (with no limiter)
+            inj = 1.e-4
+            P0 = 45.e5
+            h = 4.4e5
+            gen = t2generator(name = name, block = blkname,
+                              type = 'XINJ', ex = h, hg = P0, fg = inj)
+            g = generator_json(gen)
+            self.assertFalse('rate' in g)
+            self.assertEqual(g['injectivity'], {'coefficient': inj, 'pressure': P0})
+            self.assertEqual(g['enthalpy'], h)
+            self.assertEqual(g['direction'], 'injection')
             self.assertFalse('limiter' in g)
             json.dumps(g)
+
+        def network_test():
+
+            dat.clear_generators()
+            gen = t2generator(name = 'abc 1', block = '  a 1', type = 'DELG')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'abc 2', block = '  a 2', type = 'DELG')
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertFalse('network' in j)
+
+            # reset reinjection
+            gen = t2generator(name = 'chk 1', block = 'chk99', type = 'FINJ',
+                              gx = 1e5, ex = 85e3, hg = 1., fg = 1.)
+            dat.add_generator(gen)
+            # add two makeup wells
+            gen = t2generator(name = 'foo 1', block = '  a 1', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 2', block = '  a 2', type = 'DMAK')
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertTrue('network' in j)
+            self.assertEqual(len(j['network']['group']), 1)
+            grp = j['network']['group'][-1]
+            self.assertEqual(grp['name'], 'reinjector group 1')
+            self.assertEqual(grp['in'], ['abc 1', 'abc 2'])
+            self.assertFalse('scaling' in grp)
+            self.assertFalse('limiter' in grp)
+
+            # add TMAK
+            gen = t2generator(block = '  a 1', type = 'TMAK',
+                              gx = 100., hg = -1)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertEqual(len(j['source']), 5)
+            self.assertEqual(len(j['network']['group']), 2)
+            grp = j['network']['group'][-1]
+            self.assertEqual(grp['name'], 'makeup 1')
+            self.assertEqual(grp['in'], ['foo 1', 'foo 2'])
+            self.assertEqual(grp['scaling'], 'uniform')
+            self.assertEqual(grp['limiter'], {'total': 100})
+
+            # add two water reinjection wells
+            q1, h1 = 1.1, 85.e3
+            gen = t2generator(name = 'inj 1', block = '  b 1', type = 'FINJ',
+                              gx = q1, ex = h1, hg = 1.)
+            dat.add_generator(gen)
+            f2, h2 = 0.3, 90.e3
+            gen = t2generator(name = 'inj 2', block = '  b 2', type = 'PINJ',
+                              ex = h2, hg = f2)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertEqual(len(j['source']), 7)
+            self.assertEqual(len(j['network']['group']), 2)
+            self.assertEqual(len(j['network']['reinject']), 2)
+            r = j['network']['reinject'][-1]
+            self.assertEqual(r['name'], 'reinjector 2')
+            self.assertEqual(r['in'], 'makeup 1')
+            self.assertEqual(len(r['water']), 2)
+            self.assertEqual(len(r['steam']), 0)
+            self.assertEqual(r['water'][0], {'out': 'inj 1', 'rate': q1, 'enthalpy': h1})
+            self.assertEqual(r['water'][1], {'out': 'inj 2', 'proportion': f2, 'enthalpy': h2})
+            self.assertFalse('overflow' in r)
+
+            # add two RINJ reinjection wells
+            h3, f3 = 82e3, 0.2
+            gen = t2generator(name = 'inj 3', block = '  b 3', type = 'RINJ',
+                              ex = h3, hg = f3)
+            dat.add_generator(gen)
+            h4, f4 = 77.e3, 0.35
+            gen = t2generator(name = 'inj 4', block = '  b 4', type = 'RINJ',
+                              ex = h4, hg = f4, fg = 1.)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertEqual(len(j['source']), 9)
+            self.assertEqual(len(j['network']['group']), 2)
+            self.assertEqual(len(j['network']['reinject']), 3)
+            r = j['network']['reinject'][1]
+            self.assertEqual(r['overflow'], 'reinjector 3')
+            r = j['network']['reinject'][2]
+            self.assertEqual(r['name'], 'reinjector 3')
+            self.assertFalse('in' in r)
+            self.assertEqual(len(r['water']), 2)
+            self.assertEqual(len(r['steam']), 0)
+            self.assertEqual(r['water'][0], {'out': 'inj 3', 'proportion': f3, 'enthalpy': h3})
+            self.assertEqual(r['water'][1], {'out': 'inj 4', 'proportion': f4, 'enthalpy': h4})
+
+            # add more production wells and a second TMAK
+            gen = t2generator(name = 'foo 3', block = '  a 3', type = 'DELG')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 4', block = '  a 4', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 5', block = '  a 5', type = 'DELG')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 6', block = '  a 6', type = 'DMAT')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'tmk 2', block = '  a 1', type = 'TMAK',
+                              gx = 50., ex = 20, hg = -2)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertEqual(len(j['network']['group']), 3)
+            grp = j['network']['group'][2]
+            self.assertEqual(grp['name'], 'tmk 2')
+            self.assertEqual(grp['in'], ['foo 4', 'foo 6'])
+            self.assertEqual(grp['scaling'], 'progressive')
+            self.assertEqual(grp['limiter'], {'total': 50, 'steam': 20})
+
+            # add three more reinjection wells including one IMAK
+            h5, q5 = 87e3, 1.5
+            gen = t2generator(name = 'inj 5', block = '  b 5', type = 'FINJ',
+                              gx = q5, ex = h5, hg = 1.)
+            dat.add_generator(gen)
+            q6, h6, P6, finj6 = 10., 1200.e3, 5e5, 1e-7
+            gen = t2generator(name = 'inj 6', block = '  b 6', type = 'IMAK',
+                              gx = q6, ex = h6, hg = P6, fg = -finj6)
+            dat.add_generator(gen)
+            f7, h7 = 0.1, 1400.e3
+            gen = t2generator(name = 'inj 7', block = '  c 1', type = 'PINJ',
+                              ex = h7, hg = -f7, fg = 1.)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            q = j['source'][-2]
+            self.assertEqual(q['direction'], 'injection')
+            self.assertEqual(q['limiter'], {'total': q6})
+            self.assertEqual(q['injectivity'], {'pressure': P6, 'coefficient': finj6})
+            self.assertEqual(len(j['network']['group']), 4)
+            grp = j['network']['group'][3]
+            self.assertEqual(grp['name'], 'reinjector group 4')
+            self.assertEqual(grp['in'], ['foo 3', 'foo 5', 'tmk 2'])
+            self.assertFalse('scaling' in grp)
+            self.assertFalse('limiter' in grp)
+            self.assertEqual(len(j['source']), 16)
+            self.assertEqual(len(j['network']['reinject']), 4)
+            r = j['network']['reinject'][3]
+            self.assertEqual(r['name'], 'reinjector 4')
+            self.assertEqual(r['in'], 'reinjector group 4')
+            self.assertEqual(len(r['water']), 1)
+            self.assertEqual(len(r['steam']), 2)
+            self.assertEqual(r['water'][0], {'out': 'inj 5', 'rate': q5, 'enthalpy': h5})
+            self.assertEqual(r['steam'][0], {'out': 'inj 6', 'enthalpy': h6})
+            self.assertEqual(r['steam'][1], {'out': 'inj 7', 'proportion': f7, 'enthalpy': h7})
+            self.assertFalse('overflow' in r)
+
+            # two TMAKs contributing to a single reinjector
+            dat.clear_generators()
+            gen = t2generator(name = 'foo 1', block = '  a 4', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 2', block = '  a 5', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'tmk 1', block = '  a 1', type = 'TMAK',
+                              gx = 50, ex = 20, hg = -2)
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 3', block = '  a 6', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'foo 4', block = '  a 3', type = 'DMAK')
+            dat.add_generator(gen)
+            gen = t2generator(name = 'tmk 2', block = '  a 2', type = 'TMAK',
+                              gx = 60, ex = 30, hg = -2)
+            dat.add_generator(gen)
+            h1, q1 = 87e3, 1.5
+            gen = t2generator(name = 'inj 1', block = '  b 1', type = 'FINJ',
+                              gx = q1, ex = h1, hg = 1.)
+            dat.add_generator(gen)
+            f2, h2 = 0.3, 90.e3
+            gen = t2generator(name = 'inj 2', block = '  c 1', type = 'PINJ',
+                              ex = h2, hg = f2, fg = 1.)
+            dat.add_generator(gen)
+            j = dat.generators_json(geo, 'we')
+            self.assertEqual(len(j['source']), 6)
+            self.assertEqual(len(j['network']['group']), 3)
+            self.assertEqual(len(j['network']['reinject']), 1)
+            grp = j['network']['group'][0]
+            self.assertEqual(grp['name'], 'tmk 1')
+            self.assertEqual(grp['in'], ['foo 1', 'foo 2'])
+            self.assertEqual(grp['scaling'], 'progressive')
+            self.assertEqual(grp['limiter'], {'total': 50, 'steam': 20})
+            grp = j['network']['group'][1]
+            self.assertEqual(grp['name'], 'tmk 2')
+            self.assertEqual(grp['in'], ['foo 3', 'foo 4'])
+            self.assertEqual(grp['scaling'], 'progressive')
+            self.assertEqual(grp['limiter'], {'total': 60, 'steam': 30})
+            grp = j['network']['group'][2]
+            self.assertEqual(grp['name'], 'reinjector group 1')
+            self.assertEqual(grp['in'], ['tmk 1', 'tmk 2'])
+            self.assertFalse('scaling' in grp)
+            r = j['network']['reinject'][0]
+            self.assertEqual(r['name'], 'reinjector 1')
+            self.assertEqual(r['in'], 'reinjector group 1')
+            self.assertEqual(len(r['water']), 2)
+            self.assertFalse('steam' in r)
+            self.assertFalse('overflow' in r)
 
         def boundaries_test():
 
@@ -1401,10 +1831,12 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'w'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
             json.dumps(j)
@@ -1413,22 +1845,43 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
             json.dumps(j)
+
+            # pure water + tracer, liquid top BCs
+            dat.multi['eos'] = 'EWT'
+            eos = 'we'
+            P0, T0, X0 = 1.e5, 15., 1.e-6
+            bdy_incons = dat.grid.incons((P0, T0, X0))
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords,
+                                    {'name': 'tracer'})
+            self.assertEqual(len(j['boundaries']), 1)
+            self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
+            self.assertEqual(j['boundaries'][0]['region'], 1)
+            self.assertEqual(j['boundaries'][0]['tracer'], X0)
+            self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
+            self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
+            json.dumps(j)
+            dat.multi['eos'] = 'EW'
 
             # pure water, dry steam top BCs
             eos = 'we'
             P0, T0 = 0.8e5, 100.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 2)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
             json.dumps(j)
@@ -1437,10 +1890,12 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, Sv0 = 3.e5, 0.2
             bdy_incons = dat.grid.incons((P0, Sv0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, Sv0])
             self.assertEqual(j['boundaries'][0]['region'], 4)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
             json.dumps(j)
@@ -1449,10 +1904,12 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'wae'
             P0, T0, Pa0 = 1.e5, 15., 0.1e5
             bdy_incons = dat.grid.incons((P0, T0, Pa0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_2_or_4, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0, Pa0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [0, 0, 1])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], [0, 1, 2, 3])
             json.dumps(j)
@@ -1475,7 +1932,8 @@ class t2dataTestCase(unittest.TestCase):
             Pb, Tb = 4.e5, 25.
             for blk in dat.grid.blocklist[-geo.num_columns:]:
                 bdy_incons[blk.name] = (Pb, Tb)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 8)
             for ibc, bc in enumerate(j['boundaries'][:4]):
                 self.assertEqual(bc,
@@ -1508,7 +1966,8 @@ class t2dataTestCase(unittest.TestCase):
             Ps, Ts = 3.e5, 20.
             for blk in dat.grid.blocklist[-len(cell_indices):]:
                 bdy_incons[blk.name] = (Ps, Ts)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 12)
             for ibc, bc in enumerate(j['boundaries'][-4:]):
                 cellindex = cell_indices[ibc]
@@ -1523,7 +1982,8 @@ class t2dataTestCase(unittest.TestCase):
             eos = 'we'
             P0, T0 = 1.e5, 15.
             bdy_incons = dat.grid.incons((P0, T0))
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [P0, T0])
             self.assertEqual(j['boundaries'][0]['region'], 1)
@@ -1546,7 +2006,8 @@ class t2dataTestCase(unittest.TestCase):
             Pb, Tb = 4.e5, 25.
             for blk in dat.grid.blocklist[-geo.num_columns:]:
                 bdy_incons[blk.name] = (Pb, Tb)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 8)
             for ibc, bc in enumerate(j['boundaries'][:4]):
                 self.assertEqual(bc,
@@ -1585,10 +2046,12 @@ class t2dataTestCase(unittest.TestCase):
             Ps, Ts = 3.e5, 20.
             for blk in dat.grid.blocklist[-len(cell_indices):]:
                 bdy_incons[blk.name] = (Ps, Ts)
-            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos, mesh_coords)
+            j = dat.boundaries_json(geo, bdy_incons, atmos_volume, eos,
+                                    convert_primary_eos_1, mesh_coords)
             self.assertEqual(len(j['boundaries']), 1)
             self.assertEqual(j['boundaries'][0]['primary'], [Ps, Ts])
             self.assertEqual(j['boundaries'][0]['region'], 1)
+            self.assertFalse('tracer' in j['boundaries'][0])
             self.assertEqual(j['boundaries'][0]['faces']['normal'], [1, 0])
             self.assertEqual(j['boundaries'][0]['faces']['cells'], cell_indices)
             json.dumps(j)
@@ -1600,9 +2063,10 @@ class t2dataTestCase(unittest.TestCase):
         timestepping_test()
         relative_permeability_test()
         capillary_pressure_test()
-        primary_to_region_test()
+        convert_primary_test()
         initial_test()
         generators_test()
+        network_test()
         boundaries_test()
 
 if __name__ == '__main__':

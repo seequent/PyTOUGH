@@ -68,6 +68,9 @@ class mulgridTestCase(unittest.TestCase):
         self.assertEqual(blk, blk2)
         blk = 'A 200'
         self.assertEqual(blk, fix_blockname(blk))
+        blk = 'abcde'
+        self.assertEqual(blk, fix_blockname(blk))
+        self.assertEqual(blk, unfix_blockname(blk))
 
     def test_valid_blockname(self):
         """valid_blockname() function"""
@@ -202,17 +205,25 @@ class mulgridTestCase(unittest.TestCase):
 
     def test_fit_surface(self):
         """fit surface"""
+        d = np.load(os.path.join('mulgrid', 'fit_surface_data.npy'))
         tol = 1.e-3
-        geo = mulgrid(os.path.join('mulgrid', 'g2.dat'))
         p = np.array([2.78153e6, 6.26941e6])
         p2 = p + np.ones(2)*5.e3
         r = [p, p2]
+
+        geo = mulgrid(os.path.join('mulgrid', 'g1.dat'))
         cols = geo.columns_in_polygon(r)
-        d = np.load(os.path.join('mulgrid', 'fit_surface_data.npy'))
         geo.fit_surface(d, alpha = 0.1, beta = 0.1, silent = True)
         s = np.array([col.surface for col in cols])
-        r = np.load(os.path.join('mulgrid', 'fit_surface_result.npy'))
-        self.assertTrue(np.allclose(s, r, atol = tol))
+        expected = np.load(os.path.join('mulgrid', 'fit_surface_result_g1.npy'))
+        self.assertTrue(np.allclose(s, expected, atol = tol))
+
+        geo = mulgrid(os.path.join('mulgrid', 'g2.dat'))
+        cols = geo.columns_in_polygon(r)
+        geo.fit_surface(d, alpha = 0.1, beta = 0.1, silent = True)
+        s = np.array([col.surface for col in cols])
+        expected = np.load(os.path.join('mulgrid', 'fit_surface_result_g2.npy'))
+        self.assertTrue(np.allclose(s, expected, atol = tol))
 
     def test_refine(self):
         """refine()"""
@@ -223,7 +234,7 @@ class mulgridTestCase(unittest.TestCase):
         cols = [col for col in geo.columnlist if 400. < col.centre[1] < 600.]
         geo.refine(cols)
         self.assertEqual(geo.area, orig_area)
-        self.assertEqual(geo.num_columns, 189)
+        self.assertEqual(geo.num_columns, 182)
         self.assertEqual(geo.num_nodes, 169)
         areas = np.sort(np.array([col.area for col in geo.columnlist]))
         a = np.sort(np.load(os.path.join('mulgrid', 'refine_areas.npy')))
@@ -257,6 +268,103 @@ class mulgridTestCase(unittest.TestCase):
             self.assertEqual(found_names, names)
         except: err = True
         self.assertFalse(err)
+
+        # track through grid with a corner removed:
+        geo = mulgrid().rectangular([100]*2, [100]*2, [10])
+        geo.translate([1e7, 1e7, 0])
+        geo.delete_column(geo.columnlist[0].name)
+        geo.rotate(30)
+        line = [geo.columnlist[0].centre, geo.columnlist[1].centre]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 2)
+        if len(t) > 1:
+            self.assertEqual(t[0][0].name, geo.columnlist[0].name)
+            self.assertEqual(t[1][0].name, geo.columnlist[1].name)
+
+        # M-grid:
+        geo = mulgrid().rectangular([100]*5, [100]*3, [10])
+        names = [geo.columnlist[i].name for i in [1,3,6,8]]
+        for name in names: geo.delete_column(name)
+        line = [np.array([0, 50]), np.array([500, 50])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 3)
+        if (len(t) == 3):
+            self.assertEqual(t[0][0].name, geo.columnlist[0].name)
+            self.assertEqual(t[1][0].name, geo.columnlist[1].name)
+            self.assertEqual(t[2][0].name, geo.columnlist[2].name)
+
+        line = line[::-1]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 3)
+        if (len(t) == 3):
+            self.assertEqual(t[0][0].name, geo.columnlist[2].name)
+            self.assertEqual(t[1][0].name, geo.columnlist[1].name)
+            self.assertEqual(t[2][0].name, geo.columnlist[0].name)
+
+        # track within a single column:
+        col = geo.columnlist[-1]
+        p = col.centre
+        d = np.ones(2) * 25
+        line = [p - d, p + d]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 1)
+        if (len(t) == 1):
+            self.assertEqual(t[0][0].name, col.name)
+
+        # track outside grid:
+        line = [np.array([-10, -10]), np.array([600, -200])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 0)
+
+        # track entirely within grid:
+        line = [np.array([380, 270]), np.array([490, 90])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 4)
+        self.assertTrue(np.allclose(t[0][1], line[0]))
+        self.assertTrue(np.allclose(t[-1][2], line[1]))
+        if (len(t) == 4):
+            names = [ti[0].name for ti in t]
+            col_ind = [9, 10, 5, 2]
+            expected_names = [geo.columnlist[i].name for i in col_ind]
+            self.assertEqual(names, expected_names)
+
+        # track leaving grid:
+        line = [np.array([250, 50]), np.array([300, -100])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 1)
+        if (len(t) == 1):
+            self.assertEqual(t[0][0].name, geo.columnlist[1].name)
+            self.assertTrue(np.allclose(t[0][1], line[0]))
+
+        # track entering grid:
+        line = [np.array([270, -50]), np.array([230, 270])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 3)
+        if (len(t) == 3):
+            names = [ti[0].name for ti in t]
+            col_ind = [1, 4, 8]
+            expected_names = [geo.columnlist[i].name for i in col_ind]
+            self.assertEqual(names, expected_names)
+            self.assertTrue(np.allclose(t[-1][2], line[1]))
+
+        # 5x5 grid:
+        geo = mulgrid().rectangular([100]*5, [100]*5, [10])
+        line = [np.array([100, 100]), np.array([400, 400])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 3)
+        if (len(t) == 3):
+            self.assertTrue(np.allclose(t[0][1], line[0]))
+            self.assertTrue(np.allclose(t[-1][2], line[1]))
+
+        # contrasting grid sizes:
+        dx = [1] * 50 + [2] * 25 + [5] * 20 + [10] * 20 + [100] * 6 + [1000] * 2
+        geo = mulgrid().rectangular(dx, [100]*5, [10])
+        line = [np.array([0, 0]), np.array([3000, 0])]
+        t = geo.column_track(line)
+        self.assertEqual(len(t), 123)
+        if (len(t) == 123):
+            self.assertTrue(np.allclose(t[0][1], line[0]))
+            self.assertTrue(np.allclose(t[-1][2], line[1]))
 
     def test_grid3d(self):
         """3D grid"""
@@ -372,6 +480,59 @@ class mulgridTestCase(unittest.TestCase):
         self.assertEqual(656, geo.num_columns)
         self.assertEqual(9184, geo.num_blocks)
         self.assertEqual(15, geo.num_layers)
+
+    def test_gmsh(self):
+        infile = os.path.join('mulgrid', 'gmsh2_2.msh')
+        layers = [1, 2, 3]
+        geo = mulgrid().from_gmsh(infile, layers)
+        self.assertEqual(117, geo.num_nodes)
+        self.assertEqual(96, geo.num_columns)
+        self.assertEqual(96 * len(layers), geo.num_blocks)
+        self.assertEqual(len(layers) + 1, geo.num_layers)
+
+        infile = os.path.join('mulgrid', 'gmsh4_1.msh')
+        layers = [1, 2, 3]
+        geo = mulgrid().from_gmsh(infile, layers)
+        self.assertEqual(48, geo.num_nodes)
+        self.assertEqual(35, geo.num_columns)
+        self.assertEqual(35 * len(layers), geo.num_blocks)
+        self.assertEqual(len(layers) + 1, geo.num_layers)
+
+    def test_layermesh(self):
+
+        def layermesh_case(geo):
+            lm = geo.layermesh
+            self.assertEqual(geo.num_nodes, lm.num_nodes)
+            self.assertEqual(geo.num_columns, lm.num_columns)
+            self.assertEqual(geo.num_layers - 1, lm.num_layers)
+            self.assertEqual(geo.num_underground_blocks, lm.num_cells)
+
+            geo2 = geo.from_layermesh(lm, atmosphere_type = geo.atmosphere_type)
+            self.assertEqual(geo.num_nodes, geo2.num_nodes)
+            self.assertEqual(geo.num_columns, geo2.num_columns)
+            self.assertEqual(geo.num_layers, geo2.num_layers)
+            self.assertEqual(geo.num_blocks, geo2.num_blocks)
+
+        geo = mulgrid().rectangular([100.]*10, [150.]*8, [10.]*10)
+        for i, col in enumerate(geo.columnlist):
+            col.surface = -40. + i / 80.
+            geo.set_column_num_layers(col)
+        geo.snap_columns_to_nearest_layers()
+        layermesh_case(geo)
+
+        geo = mulgrid().rectangular([100.]*9, [150.]*10, [10.]*11, atmos_type = 0)
+        for i, col in enumerate(geo.columnlist):
+            col.surface = -50. + i / 70.
+            geo.set_column_num_layers(col)
+        geo.snap_columns_to_nearest_layers()
+        layermesh_case(geo)
+
+        geo = mulgrid().rectangular([100.]*8, [120.]*7, [10.]*9, atmos_type = 1)
+        for i, col in enumerate(geo.columnlist):
+            col.surface = -30. + i / 60.
+            geo.set_column_num_layers(col)
+        geo.snap_columns_to_nearest_layers()
+        layermesh_case(geo)
 
     def test_block_order(self):
 

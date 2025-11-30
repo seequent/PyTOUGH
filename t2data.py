@@ -18,21 +18,70 @@ from .t2incons import *
 from math import ceil
 import struct
 from os.path import splitext
+import t2thermo
 
-def primary_to_region_we(primary):
-    """Returns thermodynamic region deduced from primary variables for EOS we."""
-    from .t2thermo import region
-    if primary[1] < 1.: return 4
-    else: return region(primary[1], primary[0])
 
-def primary_to_region_wge(primary):
-    """Returns thermodynamic region deduced from primary variables for wge
-    (NCG) EOS (wce, wae)."""
+def convert_primary_eos_1(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 1."""
+    if primary[1] < 1.5: return primary, 4
+    else: return primary, t2thermo.region(primary[1], primary[0])
+
+def convert_primary_eos_2_or_4(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 2 or 4.
+    """
     pwater = primary[0] - primary[2]
-    return primary_to_region_we([pwater, primary[1]])
+    v, region = convert_primary_eos_1([pwater, primary[1]])
+    return primary, region
 
-primary_to_region_funcs = {'w': primary_to_region_we, 'we': primary_to_region_we,
-                           'wce': primary_to_region_wge, 'wae': primary_to_region_wge}
+def convert_primary_eos_3(primary):
+    """Returns Waiwera primary variables and thermodynamic region deduced
+    from primary variables for EOS 3.
+    """
+    ww, aw = 18.016, 28.96
+
+    def region_1_air_partial_pressure(Xa):
+        # air partial pressure from mass fraction in liquid phase
+        H = 1.e-10
+        Xmol = Xa * ww / ((1. - Xa) * aw + Xa * ww)
+        return Xmol / H
+
+    def region_2_air_partial_pressure(P, T, Xa, Pa):
+        # air partial pressure from total pressure, temperature,
+        # mass fraction and initial estimate, in vapour phase
+        from scipy.optimize import fsolve
+        R = 8314.56
+        Tk = T + t2thermo.tc_k
+        def f(Pa, Tk, P, Xa):
+            return R * Tk * t2thermo.supst(T, P - Pa)[0] * Xa - Pa * (1. - Xa) * aw
+        Pa = fsolve(f, x0 = Pa, args = (Tk, P, Xa))[0]
+        Pa = max(Pa, 0)
+        return Pa
+
+    if primary[1] < 1.5: # single-phase (P, X, T)
+        Xa, T = primary[1:]
+        Pa = region_1_air_partial_pressure(Xa)
+        P = primary[0]
+        Pw = P - Pa
+        if T <= 350:
+            Psat = t2thermo.sat(T)
+            region = 1 if Pw > Psat else 2
+        else:
+            region = 2
+        if region == 2:
+            Pa = region_2_air_partial_pressure(P, T, Xa, Pa)
+        variable = [P, T, Pa]
+    else: #  two-phase (P, Sv + 10, T)
+        P, Sv10, T = primary[:]
+        Sv = Sv10 - 10.
+        Pw = t2thermo.sat(T)
+        Pa = P - Pw
+        variable = [P, Sv, Pa]
+        region = 4
+
+    return variable, region
+
 waiwera_eos_num_primary = {'w': 1, 'we': 2, 'wce': 3, 'wae': 3}
 
 def trim_trailing_nones(vals):
@@ -2073,10 +2122,19 @@ class t2data(object):
         c, s = cos(anglerad), sin(anglerad)
         rotation = np.array([[c, s], [-s, c]])
         for blknames in geo.block_connection_name_list:
-            con = self.grid.connection[blknames]
+            if blknames in self.grid.connection:
+                names = blknames
+                con = self.grid.connection[blknames]
+            else:
+                rnames = blknames[::-1]
+                if rnames in self.grid.connection:
+                    names = rnames
+                    con = self.grid.connection[rnames]
+                else:
+                    raise Exception ('Connection not found: ' + str(blknames))
             blkindices = [geo.block_name_index[blkname] -
-                          geo.num_atmosphere_blocks for blkname in blknames]
-            laynames = [geo.layer_name(blkname) for blkname in blknames]
+                          geo.num_atmosphere_blocks for blkname in names]
+            laynames = [geo.layer_name(blkname) for blkname in names]
             if laynames[0] != laynames[1]: # vertical connection
                 underground = all([blkindex >= 0 for blkindex in blkindices])
                 if underground and con.direction != 3:
@@ -2084,7 +2142,7 @@ class t2data(object):
                         "cells": blkindices,
                         "permeability_direction": con.direction})
             else:
-                colnames = [geo.column_name(blkname) for blkname in blknames]
+                colnames = [geo.column_name(blkname) for blkname in names]
                 d = geo.column[colnames[1]].centre - geo.column[colnames[0]].centre
                 d2 = np.dot(rotation, d)
                 expected_direction = np.argmax(abs(d2)) + 1
@@ -2096,10 +2154,26 @@ class t2data(object):
         return jsondata
 
     def eos_json(self, eos):
-        """Converts TOUGH2 EOS data to Waiwera JSON dictionary."""
+        """Converts TOUGH2 EOS data to Waiwera JSON dictionary. Also returns a
+        second dictionary with tracer data and the appropriate primary
+        variable conversion function for the EOS.
+        """
         jsondata = {}
-        supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWAV': 'wae'}
+        supported_eos = {'W': 'w', 'EW': 'we', 'EWC': 'wce', 'EWA': 'wae',
+                         'EWAV': 'wae', 'EWT': 'we', 'EWTD': 'we',
+                         'EWAX': 'wae', 'EWCX': 'wce'}
+        primary_converters = {'W': convert_primary_eos_1,
+                              'EW': convert_primary_eos_1,
+                              'EWC': convert_primary_eos_2_or_4,
+                              'EWA': convert_primary_eos_3,
+                              'EWAV': convert_primary_eos_2_or_4,
+                              'EWT': convert_primary_eos_1,
+                              'EWTD': convert_primary_eos_1,
+                              'EWAX': convert_primary_eos_2_or_4,
+                              'EWCX': convert_primary_eos_2_or_4
+                              }
         aut2eosname = ''
+        primary_converter = None
         if eos is None:
             if self.multi:
                 if 'eos' in self.multi:
@@ -2118,11 +2192,33 @@ class t2data(object):
                 jsondata['eos'] = {'name': supported_eos[aut2eosname]}
                 if jsondata['eos']['name'] == 'w':
                     jsondata['eos']['temperature'] = self.parameter['default_incons'][1]
+                primary_converter = primary_converters[aut2eosname]
+                if aut2eosname == 'EWA':
+                    if self.parameter['option'][19] > 0:
+                        raise Exception ('EOS %s with MOP(19) > 0 not supported.' % \
+                                         aut2eosname)
+                elif aut2eosname in ['EWAV', 'EWAX']:
+                    if self.parameter['option'][19] == 1:
+                        raise Exception ('EOS %s with MOP(19) = 1 not supported.' % \
+                                         aut2eosname)
+                    elif self.parameter['option'][19] == 2:
+                        primary_converter = convert_primary_eos_3
             else:
-                raise Exception ('EOS not supported:' + aut2eosname)
+                raise Exception ('EOS %s not supported.' % aut2eosname)
         else:
             raise Exception ('EOS not detected.')
-        return jsondata
+        if aut2eosname in ['EWT', 'EWTD']:
+            tracerdata = {'tracer': {'name': 'tracer', 'phase': 'liquid'}}
+            if aut2eosname == 'EWTD':
+                diffusion = np.array(self.diffusion)
+                if np.all(diffusion < 0) and np.allclose(diffusion, diffusion[0][0]):
+                    D = -diffusion[0][0]
+                    tracerdata['tracer']['diffusion'] = D
+                else:
+                    raise Exception ('Unhandled diffusion type: %s' % str(self.diffusion))
+        else:
+            tracerdata = None
+        return jsondata, tracerdata, primary_converter
 
     def timestepping_json(self):
         """Converts TOUGH2 timestepping/ iteration parameters to Waiwera JSON
@@ -2144,8 +2240,11 @@ class t2data(object):
              'solver': {'nonlinear': {'tolerance': {'function':
                                           {'absolute': abstol, 'relative': reltol}},
                                       'maximum': {'iterations': maxit}}}}
-        if self.parameter['max_timesteps'] is not None and \
-           self.parameter['max_timesteps'] >= 0:
+        if self.parameter['max_timesteps'] is None:
+            jsondata['time']['step']['maximum']['number'] = 0
+        elif self.parameter['max_timesteps'] < 0:
+            jsondata['time']['step']['maximum']['number'] = None
+        else:
             jsondata['time']['step']['maximum']['number'] = self.parameter['max_timesteps']
         if self.parameter['const_timestep'] < 0. :
             jsondata['time']['step'].update({'size': self.parameter['timestep'],
@@ -2261,155 +2360,386 @@ class t2data(object):
         else: jsondata['capillary_pressure'] = None
         return jsondata
 
-    def initial_json(self, geo, incons, eos):
+    def initial_json(self, geo, incons, eos, primary_converter, tracer = None):
         """Converts initial condition specifications to Waiwera JSON dictionary."""
         jsondata = {}
+        num_primary = waiwera_eos_num_primary[eos]
+        num_t2_primary = num_primary + 1 if eos == 'w' else num_primary
 
         if isinstance(incons, str):
             jsondata['initial'] = {'filename': incons}
         elif isinstance(incons, list):
-            num_primary = waiwera_eos_num_primary[eos]
-            jsondata['initial'] = {'primary': incons[:num_primary]}
-            if incons:
-                if eos in primary_to_region_funcs:
-                    primary_to_region = primary_to_region_funcs[eos]
-                    jsondata['initial']['region'] = primary_to_region(incons)
-                else:
-                    raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+            if len(incons) >= num_t2_primary:
+                primary, region = primary_converter(incons[:num_t2_primary])
+                jsondata['initial'] = {'primary': primary[:num_primary],
+                                       'region': region}
+            if tracer and len(incons) >= num_t2_primary + 1:
+                jsondata['initial']['tracer'] = incons[num_t2_primary]
         elif isinstance(incons, t2incon):
-            num_primary = waiwera_eos_num_primary[eos]
-            if eos in primary_to_region_funcs:
-                jsondata['initial'] = {'primary': [], 'region': []}
-                primary_to_region = primary_to_region_funcs[eos]
-                for blkname in geo.block_name_list[geo.num_atmosphere_blocks:]:
-                    primary = incons[blkname].variable
-                    jsondata['initial']['primary'].append(primary[:num_primary])
-                    jsondata['initial']['region'].append(primary_to_region(primary))
-                if np.isclose(jsondata['initial']['primary'],
-                              jsondata['initial']['primary'][0], rtol = 1.e-8).all():
-                    jsondata['initial']['primary'] = jsondata['initial']['primary'][0]
-                if len(set(jsondata['initial']['region'])) == 1:
-                    jsondata['initial']['region'] = jsondata['initial']['region'][0]
-            else:
-                raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+            jsondata['initial'] = {'primary': [], 'region': []}
+            if tracer: jsondata['initial']['tracer'] = []
+            for blkname in geo.block_name_list[geo.num_atmosphere_blocks:]:
+                var = incons[blkname].variable
+                primary, region = primary_converter(var[:num_t2_primary])
+                jsondata['initial']['primary'].append(primary[:num_primary])
+                jsondata['initial']['region'].append(region)
+                if tracer: jsondata['initial']['tracer'].append(var[num_t2_primary])
+            if np.isclose(jsondata['initial']['primary'],
+                          jsondata['initial']['primary'][0], rtol = 1.e-8).all():
+                jsondata['initial']['primary'] = jsondata['initial']['primary'][0]
+            if len(set(jsondata['initial']['region'])) == 1:
+                jsondata['initial']['region'] = jsondata['initial']['region'][0]
+            if tracer:
+                if np.isclose(jsondata['initial']['tracer'],
+                              jsondata['initial']['tracer'][0], rtol = 1.e-8).all():
+                    jsondata['initial']['tracer'] = jsondata['initial']['tracer'][0]
+                else:
+                    raise Exception("Inhomogeneous tracer initial conditions not yet supported.")
         return jsondata
 
-    def generators_json(self, geo, eosname):
-        """Converts TOUGH2 generator data to Waiwera JSON dictionary."""
+    def generators_json(self, geo, eosname, tracer = None):
+        """Converts TOUGH2 generator data to Waiwera JSON dictionary, containing
+        data for sources and the source network."""
+
         jsondata = {}
         eos_num_equations = {'w': 1, 'we': 2, 'wce': 3, 'wae': 3}
         num_eqns = eos_num_equations[eosname]
-        unsupported_types = ['CO2 ', 'DMAK', 'FEED', 'FINJ', 'HLOS', 'IMAK', 'MAKE',
-                             'PINJ', 'POWR', 'RINJ', 'TMAK', 'TOST', 'VOL.',
-                             'WBRE', 'WFLO', 'XINJ', 'XIN2']
-        mass_component = {'MASS': 1, 'MASD': 1, 'HEAT': num_eqns,
-                          'COM1': 1, 'COM2': 2, 'COM3': 3, 'COM4': 4,
-                          'COM5': 5, 'WATE': 1, 'AIR ': 2, 'TRAC': 2, 'NACL': 3}
-        limit_type = {'DELG': 'steam', 'DELS': 'steam', 'DELT': 'total', 'DELW': 'water'}
+        unsupported_types = {'CO2 ', 'FEED', 'HLOS', 'MAKE', 'POWR',
+                             'TOST', 'VOL.', 'WBRE', 'WFLO', 'XIN2'}
+        limit_type = {'DELG': 'steam', 'DMAK': 'steam', 'DELS': 'steam',
+                      'DELT': 'total', 'DELW': 'water', 'DMAT': 'total'}
+        reinjection_contributors = {'DELG', 'DELS', 'DELT', 'DELW', 'DELV',
+                                    'DMAK', 'DMAT'}
+        used_names = {}
+        # prepend block names to generator names if generator names are not unique:
+        use_block_names = len(self.generator) < self.num_generators
+
+        def unique_name(gen):
+            """Generates a unique generator name not already in used_names."""
+            if gen.name == '': return gen.name
+            else:
+                if use_block_names:
+                    name = '%5s%5s' % (gen.block, gen.name)
+                else:
+                    name = gen.name
+                if name in used_names:
+                    new_name = '%s_%d' % (name, used_names[name])
+                    used_names[name] += 1
+                else:
+                    new_name = name
+                    used_names[name] = 1
+                return new_name
+
+        def separator(P):
+            if P is None: Psep = 0.55e6
+            else:
+                if P > 0.: Psep = P
+                elif P < 0: Psep = [1.45e6, 0.55e6]
+                else: Psep = 0.55e6
+            return {'pressure': Psep}
+
         if self.parameter['option'][12] == 0:
             interp_type, averaging_type = "linear", "endpoint"
         elif self.parameter['option'][12] == 1:
             interp_type, averaging_type = "step", "endpoint"
         else:
             interp_type, averaging_type = "linear", "integrate"
+
+        def generator_json(gen):
+            """Converts a single TOUGH2 generator to Waiwera JSON dictionary."""
+
+            mass_component = {'MASS': 1, 'MASD': 1, 'HEAT': num_eqns,
+                              'COM1': 1, 'COM2': 2, 'COM3': 3, 'COM4': 4,
+                              'COM5': 5, 'WATE': 1, 'AIR ': 2, 'TRAC': 2, 'NACL': 3}
+
+            def specified_injection_generator_json(g, gen):
+                """Generators which inject at a specified rate."""
+                if tracer and gen.type in ['COM2', 'TRAC']:
+                    g['tracer'] = gen.gx
+                else:
+                    g['rate'] = gen.gx
+                    if gen.type == 'MASD': injection = False
+                    else:
+                        injection = gen.gx > 0. or \
+                                    (gen.time and any([r > 0. for r in gen.rate]))
+                    if injection:
+                        g['component'] = mass_component[gen.type]
+                        if gen.type != 'HEAT': g['enthalpy'] = gen.ex
+                    else:
+                        if gen.type == 'MASS':
+                            g['separator'] = separator(gen.hg)
+                        elif gen.type == 'MASD':
+                            g['deliverability'] = {'productivity': gen.ex,
+                                                   'pressure': gen.fg,
+                                                   'threshold': gen.hg}
+                            g['limiter'] = {'total': abs(gen.gx)}
+                            g['separator'] = separator(gen.fg)
+                            g['direction'] = 'production'
+                return g
+
+            def delv_generator_json(g, gen):
+                """DELV generator type."""
+                ltab = 0 if gen.ltab is None else gen.ltab
+                if ltab > 1:
+                    raise Exception('DELV generator with multiple layers not supported.')
+                else:
+                    g['deliverability'] = {'productivity': gen.gx,
+                                           'pressure': gen.ex}
+                    if gen.gx >= 0.:
+                        g['direction'] = 'production'
+                        g['separator'] = separator(gen.fg)
+                    else:
+                        g['direction'] = 'injection'
+                        g['enthalpy'] = gen.fg
+                return g
+
+            def geothermal_deliverability_generator_json(g, gen):
+                """Geothermal deliverability generator types - DELG etc."""
+                g['deliverability'] = {'productivity': gen.gx,
+                                       'pressure': gen.ex}
+                g['separator'] = separator(gen.fg)
+                if gen.hg is not None:
+                    if gen.hg > 0.:
+                        g['limiter'] = {limit_type[gen.type]: gen.hg}
+                    elif gen.hg < 0. and gen.type in ['DELG', 'DMAK', 'DMAT']:
+                        g['rate'] = gen.hg # initial rate for computing productivity index
+                        del g['deliverability']['productivity']
+                if gen.type == 'DELS': g['production_component'] = 2
+                g['direction'] = 'production'
+                return g
+
+            def recharge_generator_json(g, gen):
+                """Recharge generator type."""
+                g['enthalpy'] = gen.ex
+                if (gen.hg is not None) and gen.hg != 0.:
+                    rech = {}
+                    g['direction'] = "both"
+                    if gen.fg is not None:
+                        if gen.fg < 0.: g['direction'] = "out"
+                        elif gen.fg > 0.: g['direction'] = "in"
+                    if gen.hg > 0.: rech['pressure'] = gen.hg
+                    else: rech['pressure'] = 'initial'
+                    rech['coefficient'] = gen.gx
+                    g['recharge'] = rech
+                else:
+                    g['rate'] = gen.gx
+                return g
+
+            def injectivity_generator_json(g, gen):
+                """Generator types which inject against a pressure."""
+                if gen.type == 'XINJ': g['enthalpy'] = gen.ex
+                g['direction'] = 'injection'
+                g['injectivity'] = {'pressure': gen.hg,
+                                    'coefficient': abs(gen.fg)}
+                if gen.gx > 0:
+                    g['limiter'] = {'total': gen.gx}
+                return g
+
+            def table_generator_json(g, gen):
+                """Generators with tables of values vs. time."""
+                g['interpolation'] = interp_type
+                g['averaging'] = averaging_type
+                data_table = [list(r) for r in zip(gen.time, gen.rate)]
+                if gen.type in ['DELG', 'DMAK', 'DMAT', 'DELT', 'DELW']:
+                    ltab = 0 if gen.ltab is None else gen.ltab
+                    if ltab > 0:
+                        g['deliverability']['productivity'] = {'time': data_table}
+                    else:
+                        g['deliverability']['pressure'] = {'enthalpy': data_table}
+                elif tracer and gen.type in ['COM2', 'TRAC']:
+                    g['tracer'] = data_table
+                else:
+                    if gen.rate: g['rate'] = data_table
+                    if gen.enthalpy:
+                        g['enthalpy'] = [list(r) for r in zip(gen.time, gen.enthalpy)]
+                return g
+
+            if gen.block in geo.block_name_index:
+                cell_index = geo.block_name_index[gen.block] - geo.num_atmosphere_blocks
+                if cell_index < 0: cell_index = None
+            else:
+                cell_index = None
+            g = {'name': unique_name(gen), 'cell': cell_index}
+
+            if gen.type in mass_component:
+                g = specified_injection_generator_json(g, gen)
+            elif gen.type == 'DELV':
+                g = delv_generator_json(g, gen)
+            elif gen.type in ['DELG', 'DELS', 'DELT', 'DELW', 'DMAK', 'DMAT']:
+                g = geothermal_deliverability_generator_json(g, gen)
+            elif gen.type == 'RECH':
+                g = recharge_generator_json(g, gen)
+            elif gen.type in ['IMAK', 'XINJ']:
+                g = injectivity_generator_json(g, gen)
+
+            if gen.time:
+                g = table_generator_json(g, gen)
+            return g
+
+        def tmak_json(g, gen, itmak, makeup_inputs):
+            """TMAK (total makeup) group with limiter."""
+            if gen.name.strip() == '':
+                g['name'] = 'makeup %d' % itmak
+            del g['cell']
+            if gen.hg is None or gen.hg >= 0:
+                raise Exception('Unscaled TMAK not supported.')
+            elif gen.hg == -1: g['scaling'] = 'uniform'
+            else: g['scaling'] = 'progressive'
+            limiter = {}
+            if gen.gx: limiter['total'] = abs(gen.gx)
+            if gen.ex: limiter['steam'] = abs(gen.ex)
+            if limiter: g['limiter'] = limiter
+            g['in'] = makeup_inputs
+            return g
+
+        def reinjector_output_type(gen):
+            """For FINJ, PINJ, RINJ and IMAK generators, returns water or steam
+            output type."""
+            if gen.type in ['FINJ', 'PINJ', 'RINJ']:
+                output_type = 'water' if gen.hg > 0 else 'steam'
+            elif gen.type == 'IMAK':
+                output_type = 'water' if gen.fg > 0 else 'steam'
+            else:
+                raise Exception('Unrecognised reinjection generator type: %s' % gen.type)
+            return output_type
+
+        def reinjector_output_json(g, gen):
+            """Returns JSON for reinjector output."""
+            output = {'out': g['name']}
+            output['enthalpy'] = gen.ex
+            if gen.type == 'FINJ':
+                output['rate'] = gen.gx
+            elif gen.type in ['PINJ', 'RINJ']:
+                output['proportion'] = abs(gen.hg)
+            return output
+
+        def has_outputs(reinjector):
+            """Returns true if JSON has non-empty 'water' or 'steam' properties."""
+            return reinjector['water'] or reinjector['steam']
+
+        def prune_reinjector(reinjector):
+            """Deletes empty keys from reinjector."""
+            for key in ['water', 'steam']:
+                if reinjector[key] == []: del reinjector[key]
+            return reinjector
+
+        sources, groups, reinjectors = [], [], []
+        makeup_inputs, group_inputs = [], []
+        itmak, ireinjector = 1, 1
+        reinjection = False
+
         if self.generatorlist:
-            jsondata['source'] = []
             for gen in self.generatorlist:
+
                 if gen.type in unsupported_types:
                     raise Exception('Generator type ' + gen.type + ' not supported.')
                 else:
-                    cell_index = geo.block_name_index[gen.block] - geo.num_atmosphere_blocks
-                    g = {'name': gen.name, 'cell': cell_index}
-                    if gen.type in mass_component:
-                        g['rate'] = gen.gx
-                        if gen.gx > 0. or (gen.time and any([r > 0. for r in gen.rate])):
-                            g['component'] = mass_component[gen.type]
-                            if gen.type != 'HEAT': g['enthalpy'] = gen.ex
-                    if gen.type == 'DELV':
-                        if gen.ltab > 1:
-                            raise Exception('DELV generator with multiple layers not supported.')
-                        else:
-                            g['deliverability'] = {'productivity': gen.gx,
-                                                   'pressure': gen.ex}
-                        g['direction'] = 'production'
-                    elif gen.type in ['DELG', 'DELS', 'DELT', 'DELW']:
-                        g['deliverability'] = {'productivity': gen.gx,
-                                               'pressure': gen.ex}
-                        if gen.hg is not None:
-                            if gen.hg > 0.:
-                                g['limiter'] = {'type': limit_type[gen.type], 'limit': gen.hg}
-                                if gen.type != 'DELT':
-                                    if gen.fg is not None:
-                                        if gen.fg > 0.:
-                                            g['limiter']['separator_pressure'] = gen.fg
-                                        elif gen.fg < 0.:
-                                            raise Exception('Two-stage flash separator not supported.')
-                            elif gen.hg < 0. and gen.type == 'DELG':
-                                g['rate'] = gen.hg # initial rate for computing productivity index
-                                del g['deliverability']['productivity']
-                        if gen.type == 'DELS': g['production_component'] = 2
-                        g['direction'] = 'production'
-                    elif gen.type == 'MASD':
-                        g['deliverability'] = {'productivity': gen.ex,
-                                               'pressure': gen.fg,
-                                               'threshold': gen.hg}
-                        g['direction'] = 'production'
-                    elif gen.type == 'RECH':
-                        g['enthalpy'] = gen.ex
-                        if (gen.hg is not None) and gen.hg != 0.:
-                            rech = {}
-                            g['direction'] = "both"
-                            if gen.fg is not None:
-                                if gen.fg < 0.: g['direction'] = "out"
-                                elif gen.fg > 0.: g['direction'] = "in"
-                            if gen.hg > 0.: rech['pressure'] = gen.hg
-                            else: rech['pressure'] = 'initial'
-                            rech['coefficient'] = gen.gx
-                            g['recharge'] = rech
-                        else:
-                            g['rate'] = gen.gx
-                    if gen.time:
-                        g['interpolation'] = interp_type
-                        g['averaging'] = averaging_type
-                        data_table = [list(r) for r in zip(gen.time, gen.rate)]
-                        if gen.type in ['DELG', 'DELT', 'DELW']:
-                            if gen.ltab > 0:
-                                g['deliverability']['productivity'] = {'time': data_table}
+
+                    g = generator_json(gen)
+                    if gen.type != 'TMAK': sources.append(g)
+
+                    if gen.type in ['DMAK', 'DMAT']:
+                        makeup_inputs.append(g['name'])
+                    elif gen.type in reinjection_contributors:
+                        group_inputs.append(g['name'])
+                    elif gen.type == 'TMAK':
+                        tmak_subgroup = tmak_json(g, gen, itmak, makeup_inputs)
+                        itmak += 1
+                        makeup_inputs = []
+                        groups.append(tmak_subgroup)
+                        group_inputs.append(tmak_subgroup['name'])
+                    elif gen.type in ['FINJ', 'PINJ', 'RINJ', 'IMAK']:
+                        if not reinjection:
+                            reinjection = True
+                            if len(makeup_inputs) == 0 and len(group_inputs) == 1:
+                                group_name = group_inputs[0]
+                                reinjector_input_group = None
                             else:
-                                g['deliverability']['pressure'] = {'enthalpy': data_table}
-                        else:
-                            if gen.rate: g['rate'] = data_table
-                            if gen.enthalpy:
-                                g['enthalpy'] = [list(r) for r in zip(gen.time, gen.enthalpy)]
-                    jsondata['source'].append(g)
+                                group_name = 'reinjector group %d' % ireinjector
+                                reinjector_input_group = {'name': group_name,
+                                                          'in': group_inputs + makeup_inputs}
+                            name = 'reinjector %d' % ireinjector
+                            reinjector = {'name': name, 'in': group_name,
+                                          'water': [], 'steam': []}
+                            overflow_outputs = {'water': [], 'steam': []}
+                        if reinjection:
+                            output_json = reinjector_output_json(g, gen)
+                            output_type = reinjector_output_type(gen)
+                            if gen.type == 'RINJ':
+                                overflow_outputs[output_type].append(output_json)
+                            else:
+                                reinjector[output_type].append(output_json)
+                            if gen.type in ['FINJ', 'PINJ', 'RINJ'] and gen.fg != 0:
+                                outputs = has_outputs(reinjector)
+                                overflow = has_outputs(overflow_outputs)
+                                if outputs or overflow:
+                                    if reinjector_input_group: groups.append(reinjector_input_group)
+                                    reinjector = prune_reinjector(reinjector)
+                                    reinjectors.append(reinjector)
+                                    ireinjector += 1
+                                if overflow:
+                                    name = 'reinjector %d' % ireinjector
+                                    overflow_reinjector = {'name': name,
+                                                           'water': overflow_outputs['water'],
+                                                           'steam': overflow_outputs['steam']}
+                                    reinjectors.append(overflow_reinjector)
+                                    ireinjector += 1
+                                    reinjector['overflow'] = overflow_reinjector['name']
+                                reinjection = False
+                                makeup_inputs, group_inputs = [], []
+
+            if reinjection:
+                # end of generator list without a reinjection reset:
+                outputs = has_outputs(reinjector)
+                overflow = has_outputs(overflow_outputs)
+                if outputs or overflow:
+                    if reinjector_input_group: groups.append(reinjector_input_group)
+                    reinjectors.append(reinjector)
+                if overflow:
+                    name = 'reinjector %d' % ireinjector
+                    overflow_reinjector = {'name': name,
+                                           'water': overflow_outputs['water'],
+                                           'steam': overflow_outputs['steam']}
+                    reinjector = prune_reinjector(reinjector)
+                    reinjectors.append(overflow_reinjector)
+                    reinjector['overflow'] = overflow_reinjector['name']
+
+        if sources: jsondata['source'] = sources
+        network = {}
+        if groups: network['group'] = groups
+        if reinjectors: network['reinject'] = reinjectors
+        if 'group' in network or 'reinject' in network:
+            jsondata['network'] = network
         return jsondata
 
-    def boundaries_json(self, geo, bdy_incons, atmos_volume, eos, mesh_coords):
+    def boundaries_json(self, geo, bdy_incons, atmos_volume, eos, primary_converter,
+                        mesh_coords, tracer = None):
         """Converts Dirichlet boundary conditions to Waiwera JSON dictionary.
         Currently connections to boundary blocks that are not either horizontal or
         vertical will not be converted correctly.
         """
         jsondata = {}
         vertical_tolerance = 1.e-6
-        if eos in primary_to_region_funcs:
-            primary_to_region = primary_to_region_funcs[eos]
-            num_primary = waiwera_eos_num_primary[eos]
-            jsondata['boundaries'] = []
-            for blk in self.grid.blocklist:
-                if not (0. < blk.volume < atmos_volume):
-                    if isinstance(bdy_incons, t2incon):
-                        pv = bdy_incons[blk.name].variable
-                    else:
-                        pv = bdy_incons
-                    reg = primary_to_region(pv)
-                    bc = {'primary': pv[:num_primary], 'region': reg, 'faces': []}
-                    for conname in blk.connection_name:
-                        nz = -self.grid.connection[conname].dircos
-                        vertical_connection = abs(nz) > vertical_tolerance
-                        names = list(conname)
-                        names.remove(blk.name)
-                        interior_blkname = names[0]
-                        interior_blk = self.grid.block[interior_blkname]
+        num_primary = waiwera_eos_num_primary[eos]
+        num_t2_primary = num_primary + 1 if eos == 'w' else num_primary
+        jsondata['boundaries'] = []
+        for blk in self.grid.blocklist:
+            if not (0. < blk.volume < atmos_volume):
+                if isinstance(bdy_incons, t2incon):
+                    pv = bdy_incons[blk.name].variable
+                else:
+                    pv = bdy_incons
+                primary, reg = primary_converter(pv[:num_t2_primary])
+                bc = {'primary': primary[:num_primary], 'region': reg, 'faces': []}
+                if tracer: bc['tracer'] = pv[num_t2_primary]
+                for conname in blk.connection_name:
+                    nz = -self.grid.connection[conname].dircos
+                    vertical_connection = abs(nz) > vertical_tolerance
+                    names = list(conname)
+                    names.remove(blk.name)
+                    interior_blkname = names[0]
+                    interior_blk = self.grid.block[interior_blkname]
+                    if 0. < interior_blk.volume < atmos_volume:
                         cell_index = geo.block_name_index[interior_blkname] - geo.num_atmosphere_blocks
                         if blk.centre is None:
                             if vertical_connection:
@@ -2429,24 +2759,29 @@ class t2data(object):
                         if normal is not None:
                             bc['faces'].append({"cells": [cell_index],
                                                 "normal": list(normal)})
-                    normals = np.array([spec['normal'] for spec in bc['faces']])
-                    if np.isclose(normals, normals[0], rtol = 1.e-8).all():
-                        allcells = []
-                        for spec in bc['faces']:
-                            allcells += spec['cells']
-                        bc['faces'] = {"cells": allcells,
-                                       "normal": bc['faces'][0]["normal"]}
-                    if bc['faces']:
-                        if isinstance(bc['faces'], list) and \
-                           len(bc['faces']) == 1: bc['faces'] = bc['faces'][0]
-                        jsondata['boundaries'].append(bc)
+                normals = np.array([spec['normal'] for spec in bc['faces']])
+                if np.isclose(normals, normals[0], rtol = 1.e-8).all():
+                    allcells = []
+                    for spec in bc['faces']:
+                        allcells += spec['cells']
+                    bc['faces'] = {"cells": allcells,
+                                   "normal": bc['faces'][0]["normal"]}
+                if bc['faces']:
+                    if isinstance(bc['faces'], list) and \
+                       len(bc['faces']) == 1: bc['faces'] = bc['faces'][0]
+                    jsondata['boundaries'].append(bc)
 
-            if jsondata['boundaries']:
-                # collapse down to one boundary if possible:
-                primaries = np.array([bc['primary'] for bc in jsondata['boundaries']])
-                if np.isclose(primaries, primaries[0], rtol = 1.e-8).all():
-                    regions = np.array([bc['region'] for bc in jsondata['boundaries']])
-                    if np.isclose(regions, regions[0]).all():
+        if jsondata['boundaries']:
+            # collapse down to one boundary if possible:
+            primaries = np.array([bc['primary'] for bc in jsondata['boundaries']])
+            if np.isclose(primaries, primaries[0], rtol = 1.e-8).all():
+                regions = np.array([bc['region'] for bc in jsondata['boundaries']])
+                if np.isclose(regions, regions[0]).all():
+                    if tracer:
+                        tracers = np.array([bc['tracer'] for bc in jsondata['boundaries']])
+                        homog_tracer = np.isclose(tracers, tracers[0], rtol = 1.e-8).all()
+                    else: homog_tracer = True
+                    if homog_tracer:
                         normals = []
                         for bc in jsondata['boundaries']:
                             if isinstance(bc['faces'], dict):
@@ -2469,8 +2804,8 @@ class t2data(object):
                             jsondata['boundaries'] = [{"primary": primary, "region": region,
                                                        "faces": {"normal": normal,
                                                                  "cells": allcells}}]
-        else:
-            raise Exception("Finding thermodynamic region from primary variables not yet supported for EOS:" + eos)
+                            if tracer:
+                                jsondata['boundaries'][0]['tracer'] = tracers[0]
         return jsondata
 
     def output_json(self):
@@ -2522,7 +2857,7 @@ class t2data(object):
         return jsondata
 
     def json(self, geo, mesh_filename, atmos_volume = 1.e25, incons = None,
-                    eos = None, bdy_incons = None, mesh_coords = 'xyz'):
+             eos = None, bdy_incons = None, mesh_coords = 'xyz'):
         """Returns a Waiwera JSON dictionary representing the t2data object
         (with associated mulgrid geometry)."""
 
@@ -2531,7 +2866,9 @@ class t2data(object):
         jsondata['gravity'] = self.parameter['gravity']
         jsondata['thermodynamics'] = 'ifc67'
         jsondata.update(self.mesh_json(geo, mesh_filename))
-        jsondata.update(self.eos_json(eos))
+        eos_data, tracer_data, primary_converter = self.eos_json(eos)
+        jsondata.update(eos_data)
+        if tracer_data: jsondata.update(tracer_data)
         jsondata.update(self.timestepping_json())
         jsondata.update(self.output_json())
         jsondata.update(self.rocks_json(geo, atmos_volume, mesh_coords))
@@ -2541,10 +2878,15 @@ class t2data(object):
             effective_incs = incons
         else:
             effective_incs = self.effective_incons(incons)
-        jsondata.update(self.initial_json(geo, effective_incs, jsondata['eos']['name']))
+        jsondata.update(self.initial_json(geo, effective_incs,
+                                          jsondata['eos']['name'],
+                                          primary_converter, tracer_data))
         if bdy_incons is None:
             bdy_incons = effective_incs
         jsondata.update(self.boundaries_json(geo, bdy_incons, atmos_volume,
-                                             jsondata['eos']['name'], mesh_coords))
-        jsondata.update(self.generators_json(geo, jsondata['eos']['name']))
+                                             jsondata['eos']['name'],
+                                             primary_converter,
+                                             mesh_coords, tracer_data))
+        jsondata.update(self.generators_json(geo, jsondata['eos']['name'],
+                                             tracer_data))
         return jsondata
