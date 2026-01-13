@@ -60,7 +60,7 @@ def fix_blockname(name):
 
 def unfix_blockname(name):
     """The inverse of fix_blockname()."""
-    return "%3s%2d" % (name[0:3], int(name[3:5]))
+    return "%3s%2d" % (name[0:3], int(name[3:5])) if name[3:5].isdigit() else name
 
 def fix_block_mapping(blockmap):
     """Fixes block names in specified block mapping."""
@@ -566,6 +566,7 @@ class mulgrid(object):
         # 0: 3-char column + 2-digit layer
         # 1: 3-char layer + 2-digit column
         # 2: 2-char layer + 3-digit column
+        # 3: 3-char column + 2-char layer
         self._atmosphere_type = atmos_type  # atmosphere type:
         # 0: single atmosphere block
         # 1: one atmosphere block per column
@@ -587,9 +588,9 @@ class mulgrid(object):
     def set_secondary_variables(self):
         """Sets variables dependent on naming convention and atmosphere type"""
         if self.atmosphere_type == 0:
-            self.atmosphere_column_name = ['ATM', ' 0', '  0'][self.convention]
-        self.colname_length = [3, 2, 3][self.convention]
-        self.layername_length = [2, 3, 2][self.convention]
+            self.atmosphere_column_name = ['ATM', ' 0', '  0', 'ATM'][self.convention]
+        self.colname_length = [3, 2, 3, 3][self.convention]
+        self.layername_length = [2, 3, 2, 2][self.convention]
 
     def get_convention(self):
         """Get naming convention"""
@@ -732,7 +733,8 @@ class mulgrid(object):
         conventionstr = [
             '3 characters for column, 2 digits for layer',
             '3 characters for layer, 2 digits for column',
-            '2 characters for layer, 3 digits for column'][self.convention]
+            '2 characters for layer, 3 digits for column',
+            '3 characters for column, 2 characters for layer'][self.convention]
         atmstr = [
             'single atmosphere block',
             'one atmosphere block over each column',
@@ -867,6 +869,7 @@ class mulgrid(object):
         if self.convention == 0: return blockname[0: 3]
         elif self.convention == 1: return blockname[3: 5]
         elif self.convention == 2: return blockname[2: 5]
+        elif self.convention == 3: return blockname[0: 3]
         else: return None
 
     def layer_name(self, blockname):
@@ -874,12 +877,13 @@ class mulgrid(object):
         if self.convention == 0: return blockname[3: 5]
         elif self.convention == 1: return blockname[0: 3]
         elif self.convention == 2: return blockname[0: 2]
+        elif self.convention == 3: return blockname[3: 5]
         else: return None
 
     def node_col_name_from_number(self, num, justfn = str.rjust,
                                   chars = ascii_lowercase, spaces = True):
         """Returns node or column name from number."""
-        if self.convention == 0:
+        if self.convention in [0, 3]:
             name = justfn(int_to_chars(num, chars = chars, spaces = spaces,
                                        length = self.colname_length), self.colname_length)
         else: name = str.rjust(str(num), self.colname_length)
@@ -1441,7 +1445,7 @@ class mulgrid(object):
         """Returns block name from layer and column names, depending on the
         naming convention.  An optional block mapping can be applied.
         """
-        if self.convention == 0: name = colname[0:3] + layername[0:2]
+        if self.convention in [0, 3]: name = colname[0:3] + layername[0:2]
         elif self.convention == 1: name = layername[0:3] + colname[0:2]
         else: name = layername[0:2] + colname[0:3]
         blkname = fix_blockname(name)
@@ -1602,7 +1606,7 @@ class mulgrid(object):
         num = 0
         self.clear_layers()
         z = top_elevation
-        surfacelayername = [' 0', 'atm', 'at'][self.convention]
+        surfacelayername = [' 0', 'atm', 'at', ' 0'][self.convention]
         self.add_layer(layer(surfacelayername, z, z))
         for thickness in thicknesses:
             z -= thickness
@@ -1616,45 +1620,92 @@ class mulgrid(object):
         self.identify_layer_tops()
 
     def from_gmsh(self, filename, layers, convention = 0, atmos_type = 2,
-                  top_elevation = 0, chars = ascii_lowercase, spaces = True,
-                  block_order = None):
+                  top_elevation = 0, justify = 'r', chars = ascii_lowercase,
+                  spaces = True, block_order = None):
         """Returns a MULgraph grid constructed from a 2D gmsh grid and the
         specified layer structure."""
+        justfn = [str.rjust, str.ljust][justify == 'l']
         grid = mulgrid(type = 'GENER', convention = convention, atmos_type = atmos_type,
                        block_order = block_order)
         grid.empty()
+        chars = uniqstring(chars)
         mode = 'r' if sys.version_info > (3,) else 'rU'
         gmsh = open(filename, mode)
         line = ''
-        chars = uniqstring(chars)
-        while not '$Nodes' in line: line = gmsh.readline()
-        num_nodes = int(gmsh.readline().strip())
-        for i in range(num_nodes):
+        while not '$MeshFormat' in line: line = gmsh.readline()
+        line = gmsh.readline()
+        filetype = line.split(' ')[0]
+        gmsh.seek(0)
+
+        def read_msh_2_2():
+            line = ''
+            while not '$Nodes' in line: line = gmsh.readline()
+            num_nodes = int(gmsh.readline().strip())
+            for i in range(num_nodes):
+                items = gmsh.readline().strip().split(' ')
+                name, x, y = items[0], float(items[1]), float(items[2])
+                name = self.node_name_from_number(int(name), justfn, chars, spaces)
+                grid.add_node(node(name, np.array([x, y])))
+            while not '$Elements' in line: line = gmsh.readline()
+            num_elements = int(gmsh.readline().strip())
+            for i in range(num_elements):
+                items = gmsh.readline().strip().split(' ')
+                element_type = int(items[1])
+                if element_type in [2, 3]: # triangle or quadrilateral
+                    name = items[0]
+                    name = self.column_name_from_number(int(name), justfn, chars, spaces)
+                    ntags = int(items[2])
+                    colnodenumbers = [int(item) for item in items[3 + ntags:]]
+                    colnodenames = [[self.node_name_from_number(nodeno, justfn, chars, spaces),
+                                     nodeno][convention in [1, 2]] for nodeno in colnodenumbers]
+                    colnodes = [grid.node[v] for v in colnodenames]
+                    grid.add_column(column(name, colnodes))
+
+        def read_msh_4_1():
+            line = ''
+            while not '$Nodes' in line: line = gmsh.readline()
             items = gmsh.readline().strip().split(' ')
-            name, x, y = items[0], float(items[1]), float(items[2])
-            name = self.node_name_from_number(int(name), chars = chars, spaces = spaces)
-            grid.add_node(node(name, np.array([x, y])))
-        while not '$Elements' in line: line = gmsh.readline()
-        num_elements = int(gmsh.readline().strip())
-        for i in range(num_elements):
+            num_entity_blocks, num_nodes = int(items[0]), int(items[1])
+            for i in range(num_entity_blocks):
+                items = gmsh.readline().strip().split(' ')
+                num_block_nodes = int(items[-1])
+                node_tags = []
+                for inode in range(num_block_nodes):
+                    node_tags.append(int(gmsh.readline()))
+                node_coords = []
+                for inode in range(num_block_nodes):
+                    items = gmsh.readline().strip().split(' ')
+                    pos = [float(item) for item in items[:2]]
+                    node_coords.append(pos)
+                for tag, pos in zip(node_tags, node_coords):
+                    name = self.node_name_from_number(tag, justfn, chars, spaces)
+                    grid.add_node(node(name, np.array(pos)))
+            while not '$Elements' in line: line = gmsh.readline()
             items = gmsh.readline().strip().split(' ')
-            element_type = int(items[1])
-            if element_type in [2, 3]: # triangle or quadrilateral
-                name = items[0]
-                name = self.column_name_from_number(int(name), chars = chars,
-                                                    spaces = True)
-                ntags = int(items[2])
-                colnodenumbers = [int(item) for item in items[3 + ntags:]]
-                colnodenames = [[self.node_name_from_number(nodeno,
-                                                            chars = chars,
-                                                            spaces = spaces),
-                                 nodeno][convention > 0] for nodeno in colnodenumbers]
-                colnodes = [grid.node[v] for v in colnodenames]
-                grid.add_column(column(name, colnodes))
+            num_entity_blocks, num_elements = int(items[0]), int(items[1])
+            for i in range(num_entity_blocks):
+                items = gmsh.readline().strip().split(' ')
+                element_type, num_block_elements = int(items[2]), int(items[3])
+                if element_type in [2, 3]: # triangle or quadrilateral
+                    for ielt in range(num_block_elements):
+                        items = gmsh.readline().strip().split(' ')
+                        tag = items[0]
+                        name = self.column_name_from_number(int(tag), justfn, chars, spaces)
+                        colnodenumbers = [int(item) for item in items[1:]]
+                        colnodenames = [[self.node_name_from_number(nodeno, justfn, chars, spaces),
+                                         nodeno][convention in [1, 2]] for nodeno in colnodenumbers]
+                        colnodes = [grid.node[v] for v in colnodenames]
+                        grid.add_column(column(name, colnodes))
+                else:
+                    for ielt in range(num_block_elements): gmsh.readline()
+
+        if filetype == '2.2': read_msh_2_2()
+        elif filetype == '4.1': read_msh_4_1()
+        else: raise Exception('GMSH version %s not supported.' % filetype)
         gmsh.close()
         for con in grid.missing_connections: grid.add_connection(con)
         grid.delete_orphans()
-        grid.add_layers(layers, top_elevation, chars, spaces)
+        grid.add_layers(layers, top_elevation, justify, chars, spaces)
         grid.set_default_surface()
         grid.identify_neighbours()
         grid.setup_block_name_index()
@@ -1952,117 +2003,41 @@ class mulgrid(object):
         line.
         """
 
-        def furthest_intersection(poly, line):
-            """Returns furthest intersection point between line and poly."""
-            pts, inds = line_polygon_intersections(poly, line,
-                                                   bound_line = (True, False),
-                                                   indices = True)
-            if pts:
-                d = np.array([np.linalg.norm(intpt - line[0]) for intpt in pts])
-                i = np.argmax(d)
-                return pts[i], inds[i]
-            else: return None, None
+        tol = 1e-3
+        def track_dist(p): return norm(p - line[0])
 
-        def find_track_start(line):
-            """Finds starting point for track- an arbitrary point on the line that is inside
-            the grid.  If the start point of the line is inside the grid, that is used;
-            otherwise, a recursive bisection technique is used to find a point."""
-            col, start_type = None, None
-            for endpt, name in zip(line, ['start', 'end']):
-                pos, col, start_type = endpt, self.column_containing_point(endpt), name
-                if col: break
-            if not col: # line ends are both outside the grid:
-                start_type = 'mid'
-                max_levels = 7
-
-                def find_start(line, level = 0):
-                    midpt = 0.5 * (line[0] + line[1])
-                    col = self.column_containing_point(midpt)
-                    if col: return midpt, col
-                    else:
-                        if level <= max_levels:
-                            line0, line1 = [line[0], midpt], [midpt, line[1]]
-                            pos, col = find_start(line0, level + 1)
-                            if col: return pos, col
-                            else:
-                                pos, col = find_start(line1, level + 1)
-                                if col: return pos, col
-                                else: return None, None
-                        else: return None, None
-
-                pos, col = find_start(line)
-            return pos, col, start_type
-
-        def next_corner_column(col, pos, more, cols):
-            """If the line has hit a node, determine a new column containing that node,
-            not already visited."""
-            node_tol = 1.e-12
-            nextcol = None
-            nearnodes = [n for n in col.node if np.linalg.norm(n.pos - pos) < node_tol]
-            if nearnodes: # hit a node
-                nearnode = nearnodes[0]
-                nearcols = nearnode.column - cols
-                if nearcols: nextcol = nearcols.pop()
-                else: more = False
-            return nextcol, more
-
-        def next_neighbour_column(col, more, cols):
-            """Determine a new neighbour column not already visited."""
-            nbrs = col.neighbour - cols
-            if nbrs: return nbrs.pop(), more
-            else: return None, False
-
-        def find_track_segment(linesegment, pos, col):
-            """Finds track segment starting from the specified position and column."""
-            track = []
-            cols, more, inpos = set(), True, pos
-            colnbr, nextcol = col.neighbourlist, None
-            lined = np.linalg.norm(linesegment[1] - linesegment[0])
-            while more:
-                cols.add(col)
-                outpos, ind = furthest_intersection(col.polygon, linesegment)
-                if outpos is not None:
-                    d = np.linalg.norm(outpos - linesegment[0])
-                    if d >= lined: # gone past end of line
-                        outpos = linesegment[1]
-                        more = False
-                    if np.linalg.norm(outpos - inpos) > 0.:
-                        track.append(tuple([col, inpos, outpos]))
-                    if more: # find next column
-                        inpos = outpos
-                        nextcol = colnbr[ind]
-                        if nextcol:
-                            if nextcol in cols:
-                                nextcol, more = next_corner_column(col, outpos, more, cols)
-                                if nextcol is None:
-                                    nextcol, more = next_neighbour_column(col, more, cols)
-                                    nbr_base_col = col
-                        else: nextcol, more = next_corner_column(col, outpos, more, cols)
+        track, dist = [], []
+        start_col, end_col = None, None
+        for col in self.columnlist:
+            bbox = col.bounding_box
+            if line_intersects_rectangle(bbox, line):
+                if start_col is None:
+                    if col.contains_point(line[0]):
+                        start_col = col
+                if end_col is None:
+                    if col.contains_point(line[1]):
+                        end_col = col
+                if col == start_col == end_col:
+                    track.append((col, line[0], line[1]))
+                    dist.append(0)
+                    break
                 else:
-                    nextcol, more = next_neighbour_column(nbr_base_col, more, cols)
-                col = nextcol
-                if col: colnbr = col.neighbourlist
-                else: more = False
+                    poly = col.polygon
+                    pts = line_polygon_intersections(poly, line)
+                    if len(pts) > 0:
+                        if col == start_col:
+                            pts = [line[0], pts[-1]]
+                        elif col == end_col:
+                            pts = [pts[0], line[-1]]
+                        din, dout = track_dist(pts[0]), track_dist(pts[-1])
+                        col_tol = max(col.side_lengths) * tol
+                        if abs(dout - din) > col_tol:
+                            track.append((col, pts[0], pts[-1]))
+                            dist.append(din)
 
-            return track
-
-        def reverse_track(track): return [tuple([tk[0], tk[2], tk[1]]) for tk in track][::-1]
-
-        pos, col, start_type = find_track_start(line)
-        if pos is not None and col:
-            if start_type == 'start':
-                track = find_track_segment(line, pos, col)
-            elif start_type == 'end':
-                track = find_track_segment(line[::-1], pos, col)
-                track = reverse_track(track)
-            else:
-                track1 = find_track_segment([pos, line[0]], pos, col)
-                track2 = find_track_segment([pos, line[1]], pos, col)
-                # remove arbitrary starting point from middle of track, and join:
-                midtk = tuple([track1[0][0], track1[0][2], track2[0][2]])
-                track = reverse_track(track1)[:-1] + [midtk] + track2[1:]
-            return track
-        else: return []
+        sortindex = np.argsort(np.array(dist))
+        track = [track[i] for i in sortindex]
+        return track
 
     def layer_plot_wells(self, plt, ax, layer, wells, well_names,
                          hide_wells_outside, wellcolour, welllinewidth, wellname_bottom):
@@ -2348,15 +2323,16 @@ class mulgrid(object):
             plt.ylim(plot_limits[1])
         else: ax.autoscale_view()
         if contours is not False:
-            from matplotlib.mlab import griddata
+            from scipy.interpolate import griddata
             valc = np.array(vals)
             bds = self.bounds
             xgrid = np.linspace(bds[0][0], bds[1][0], contour_grid_divisions[0])
             ygrid = np.linspace(bds[0][1], bds[1][1], contour_grid_divisions[1])
-            valgrid = griddata(xc, yc, valc, xgrid, ygrid, interp = 'linear')
+            Xgrid, Ygrid = np.meshgrid(xgrid,ygrid)
+            valgrid = griddata((xc, yc), valc, (Xgrid, Ygrid), method = 'linear')
             if isinstance(contours, list): cvals = contours
             else: cvals = False
-            CS = plt.contour(xgrid, ygrid, valgrid, cvals, colors = 'k')
+            CS = plt.contour(Xgrid, Ygrid, valgrid, cvals, colors = 'k')
             if contour_label_format is not None:
                 plt.clabel(CS, inline = 1, fmt = contour_label_format)
         plt.xlabel(xlabel)
@@ -2644,15 +2620,16 @@ class mulgrid(object):
                     col.norm.vmin, col.norm.vmax = tuple(colourbar_limits)
                 ax.add_collection(col)
                 if contours != False:
-                    from matplotlib.mlab import griddata
+                    from scipy.interpolate import griddata
                     valc = np.array(vals)
                     bds = ((np.min(xc), np.min(yc)), (np.max(xc), np.max(yc)))
                     xgrid = np.linspace(bds[0][0], bds[1][0], contour_grid_divisions[0])
                     ygrid = np.linspace(bds[0][1], bds[1][1], contour_grid_divisions[1])
-                    valgrid = griddata(xc, yc, valc, xgrid, ygrid, interp = 'linear')
+                    Xgrid, Ygrid = np.meshgrid(xgrid,ygrid)
+                    valgrid = griddata((xc, yc), valc, (Xgrid, Ygrid), method = 'linear')
                     if isinstance(contours, list): cvals = contours
                     else: cvals = False
-                    CS = plt.contour(xgrid, ygrid, valgrid, cvals, colors = 'k')
+                    CS = plt.contour(Xgrid, Ygrid, valgrid, cvals, colors = 'k')
                     if contour_label_format is not None:
                         plt.clabel(CS,  inline = 1, fmt = contour_label_format)
                 ax.set_ylabel(ylabel)
@@ -3542,6 +3519,40 @@ class mulgrid(object):
         elif hasattr(meshio, 'write'):
             meshio.write(filename, points, cells, file_format = file_format)
 
+    def get_layermesh(self):
+        """Returns a layermesh mesh object representing the
+        geometry. Layermesh (https://github.com/acroucher/layermesh)
+        is a Python library for manipulating layer/column meshes. It
+        must be installed before this method will work.
+        """
+        import layermesh.mesh as lm
+
+        if self.block_order == 'dmplex': cell_type_sort = -1
+        else: cell_type_sort = 0
+
+        m = lm.mesh(cell_type_sort = cell_type_sort)
+
+        elevations = [self.layerlist[0].top] + \
+                     [lay.bottom for lay in self.layerlist[1:]]
+        m.set_layers(elevations)
+
+        node_dict = {}
+        for i, mul_node in enumerate(self.nodelist):
+            lm_node = lm.node(pos = mul_node.pos, index = i)
+            m.add_node(lm_node)
+            node_dict[mul_node.name] = lm_node
+
+        for i, mul_col in enumerate(self.columnlist):
+            nodes = [node_dict[mul_node.name] for mul_node in mul_col.node]
+            lm_col = lm.column(node = nodes, index = i)
+            m.add_column(lm_col)
+            lm_col.set_surface(m.layer, mul_col.surface)
+
+        m.setup()
+        return m
+
+    layermesh = property(get_layermesh)
+
     def snap_columns_to_layers(self, min_thickness = 1.0, columns = []):
         """Snaps column surfaces to the bottom of their layers, if the surface
         block thickness is smaller than a given value.  This can be
@@ -3601,14 +3612,16 @@ class mulgrid(object):
             nodes = [centrenode if i == 'c' else
                      col.node[col.index_plus(i0, i)] for
                      i in colnodes]
-            name, colnumber = self.new_column_name(colnumber, justfn, chars)
+            name, colnumber = self.new_column_name(colnumber, justfn = justfn,
+                                                   chars = chars,
+                                                   spaces = spaces)
             self.add_column(column(name, nodes, surface = col.surface))
             self.columnlist[-1].num_layers = col.num_layers
             newcolnames.append(name)
         self.delete_column(column_name)
         return newcolnames
 
-    def triangulate_column(self, column_name, replace = True,
+    def triangulate_column(self, column_name,
                            chars = ascii_lowercase, spaces = True):
         """Replaces specified column with triangulated columns based on a new
         node at its centre, and returns list of new columns created.
@@ -3937,8 +3950,8 @@ class mulgrid(object):
                                               ((1, 2), 2, (2, 0)), ((0, 1), (1, 2), (2, 0)))},
                                  4: {(1, 0): ((0, (0, 1), 3), ((0, 1), 1, 2),
                                               ((0, 1), 2, 3)),
-                                     (2, 1): ((0, (0, 1), 'c'), ((0, 1), 1, 'c'),
-                                              (1, (1, 2), 'c'), ((1, 2), 2, 'c'),
+                                     (2, 1): ((0, (0, 1), 'c'), ((0, 1), 1, (1, 2), 'c'),
+                                              ((1, 2), 2, 'c'),
                                               (2, 3, 'c'), (0, 'c', 3)),
                                      (2, 2): ((0, (0, 1), (2, 3), 3),
                                               ((0, 1), 1, 2, (2, 3))),
@@ -3965,7 +3978,7 @@ class mulgrid(object):
                     self.add_node(node(name, col.centre))
                     centrenodes[col.name] = self.nodelist[-1]
                 for subcol in transition_column[nn][nrefined, irange]:
-                    name, colnumber = self.new_column_name(colnumber, justfn, chars)
+                    name, colnumber = self.new_column_name(colnumber, justfn, chars, spaces)
                     nodes = []
                     for vert in subcol:
                         if isinstance(vert, int): n = col.node[(istart + vert) % nn]
@@ -4225,3 +4238,33 @@ class mulgrid(object):
 
         return geo, blockmap
 
+    def from_layermesh(self, mesh, convention = 0, atmosphere_type = 2, justify = 'r',
+                       chars = ascii_lowercase, spaces = True, block_order = None):
+        """Creates a mulgrid geometry from a Layermesh mesh."""
+
+        justfn = [str.rjust, str.ljust][justify == 'l']
+        geo = mulgrid(convention = convention, atmos_type = atmosphere_type,
+                      block_order = block_order)
+
+        for n in mesh.node:
+            name = geo.node_name_from_number(n.index + 1, justfn, chars, spaces)
+            newnode = node(name, n.pos)
+            geo.add_node(newnode)
+
+        geo.add_layers([l.thickness for l in mesh.layer], mesh.layer[0].top,
+                       justify, chars, spaces)
+
+        for c in mesh.column:
+            name = geo.column_name_from_number(c.index + 1, justfn, chars, spaces)
+            colnodes = [geo.nodelist[n.index] for n in c.node]
+            newcol = column(name, colnodes, c.centre)
+            geo.add_column(newcol)
+            newcol.surface = c.surface
+            geo.set_column_num_layers(newcol)
+
+        geo.identify_neighbours()
+        geo.check(fix = True, silent = True)
+        geo.setup_block_name_index()
+        geo.setup_block_connection_name_index()
+
+        return geo

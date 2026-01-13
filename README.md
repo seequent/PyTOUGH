@@ -1,4 +1,5 @@
-![Unit tests](https://github.com/acroucher/PyTOUGH/workflows/Unit%20tests/badge.svg)
+![Unit tests](https://github.com/acroucher/PyTOUGH/workflows/Unit%20tests/badge.svg) [![Documentation Status](https://readthedocs.org/projects/PyTOUGH/badge/?version=latest)](https://PyTOUGH.readthedocs.io/en/latest/?badge=latest) [![PyPI version](https://badge.fury.io/py/PyTOUGH.svg)](https://badge.fury.io/py/PyTOUGH) ![PyPI - Downloads](https://img.shields.io/pypi/dm/PyTOUGH)
+
 
 # What is PyTOUGH?
 
@@ -6,23 +7,31 @@ PyTOUGH (Python TOUGH) is a Python library for simplifying, extending and automa
 
 # Installing PyTOUGH:
 
-First, make sure you have [Python](http://www.python.org) and the [Numerical Python](http://numpy.scipy.org/) library installed on your machine.  (For some features you will need other libraries such as [Scientific Python](http://www.scipy.org/) or [Matplotlib](http://matplotlib.sourceforge.net/)- consult the user guide for details.)
+From version 1.6.0, PyTOUGH can be installed via the [`pip`](https://pip.pypa.io) Python package installer:
 
-Click the _Clone or download_ button at the right of the PyTOUGH web page and then click [Download ZIP](https://github.com/acroucher/PyTOUGH/archive/master.zip) , and save the .zip file to your computer.  Unzip this to any directory on your computer.  This will create a directory containing a file called `setup.py`.  At the command line type `python setup.py install`.
+```
+pip install PyTOUGH
+```
+You can also install a particular version of PyTOUGH, e.g. to install version 1.6.0:
 
-(Alternatively, if you are confident using the Git version control system, you can clone the PyTOUGH repository instead of downloading a .zip file.)
+```
+pip install PyTOUGH==1.6.0
+```
+To uninstall PyTOUGH:
+```
+pip uninstall PyTOUGH
+```
+To install the `testing` branch, to get the most recent changes being tested for the next stable release:
+```
+pip install git+https://github.com/acroucher/PyTOUGH.git@testing
+```
 
 # More information:
 
-For more detailed information on PyTOUGH, consult the user guide (PDF format, in the 'doc' directory of your PyTOUGH install) and the PyTOUGH [wiki](https://github.com/acroucher/PyTOUGH/wiki/), which has links to published articles on PyTOUGH.
+For more detailed information on PyTOUGH, consult the [user guide](https://pytough.readthedocs.io) (html, or you can download PDF or Epub versions) and the PyTOUGH [wiki](https://github.com/acroucher/PyTOUGH/wiki/), which has links to published articles on PyTOUGH.
 
 # What's new in PyTOUGH?
 
-The latest stable version is 1.5.5, which has:
+The latest stable version is 1.6.6, which has:
 
-* various bug fixes and other minor enhancements.
-
-# Where's the user guide?
-
-Since PyTOUGH version 1.3.6, the PyTOUGH user guide (PyTOUGH-guide.pdf) is now included in the 'doc' directory of your PyTOUGH install.  Previously this was available separately from the 'Downloads' section on the website, but GitHub decided to phase out this 'Downloads' section.
-
+* ability to convert EOS3 models to Waiwera JSON input
